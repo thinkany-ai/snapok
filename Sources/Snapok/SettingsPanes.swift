@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 
 /// Shared look for the right-hand pages of the main window: a large title, a subtitle, then content.
 @MainActor
@@ -120,8 +121,7 @@ final class GeneralSettingsPane: PageView {
         clear.bezelStyle = .rounded
         addCard(Self.form([
             [Self.label(L("Language", "语言")), language],
-            [NSGridCell.emptyContentView, Self.label(L("Applies after restarting Snapok.", "重启 Snapok 后生效。"), secondary: true)],
-            [Self.label(L("Screenshot shortcut", "截图快捷键")), KeycapRow(keys: AppChannel.hotKeyKeys)],
+            [Self.label(L("Screenshot shortcut", "截图快捷键")), ShortcutRecorder()],
             [NSGridCell.emptyContentView, autoSave],
             [Self.label(L("Keep screenshots", "保留时间")), retention],
             [NSGridCell.emptyContentView, Self.label(L("Screenshots older than this period are deleted automatically.", "超过保留时间的截图会自动删除。"), secondary: true)],
@@ -140,7 +140,7 @@ final class GeneralSettingsPane: PageView {
 
     @objc private func saveLanguage() {
         guard AppLanguage.allCases.indices.contains(language.indexOfSelectedItem) else { return }
-        AppLanguage.allCases[language.indexOfSelectedItem].save()
+        AppLanguage.switchTo(AppLanguage.allCases[language.indexOfSelectedItem])
     }
 
     @objc private func save() {
@@ -168,103 +168,29 @@ final class GeneralSettingsPane: PageView {
     }
 }
 
-@MainActor
-final class AISettingsPane: PageView, NSTextFieldDelegate {
-    private let apiKey = NSSecureTextField()
-    private let model = NSComboBox()
-    private let baseURL = NSTextField()
-    private let translateTarget = NSPopUpButton()
-    private let targets = ["简体中文", "繁體中文", "English", "日本語", "한국어"]
-    private let autoName = NSButton(checkboxWithTitle: L("Automatically title and tag screenshots (sends images to the AI service)", "截图后自动起标题、打标签（会把截图发送给 AI 服务）"), target: nil, action: nil)
-    private let status = NSTextField(wrappingLabelWithString: "")
-
-    init() {
-        super.init(title: L("AI Settings", "AI 设置"), subtitle: L("Text recognition and redaction run locally. Translation, questions, and naming use Claude.", "文字识别和敏感信息打码在本机完成；翻译、提问和自动命名使用 Claude。"))
-        apiKey.placeholderString = "sk-ant-…"
-        model.addItems(withObjectValues: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"])
-        model.completes = true
-        baseURL.placeholderString = "https://api.anthropic.com"
-        for field in [apiKey, model, baseURL] as [NSTextField] {
-            field.widthAnchor.constraint(equalToConstant: 340).isActive = true
-            field.delegate = self
-        }
-        translateTarget.addItems(withTitles: targets)
-        translateTarget.target = self
-        translateTarget.action = #selector(save)
-        autoName.cell?.wraps = true
-        autoName.widthAnchor.constraint(lessThanOrEqualToConstant: 340).isActive = true
-        autoName.target = self
-        autoName.action = #selector(save)
-        status.font = .systemFont(ofSize: 12)
-        status.textColor = .secondaryLabelColor
-        status.preferredMaxLayoutWidth = 340
-        let test = NSButton(title: L("Test Connection", "测试连接"), target: self, action: #selector(testConnection))
-        test.bezelStyle = .rounded
-        addCard(Self.form([
-            [Self.label(L("Service", "服务")), Self.label("Anthropic Claude")],
-            [Self.label("API Key"), apiKey],
-            [NSGridCell.emptyContentView, Self.label(L("Your API key is stored in macOS Keychain.", "API Key 保存在系统钥匙串里。"), secondary: true)],
-            [Self.label(L("Model", "模型")), model],
-            [Self.label(L("Base URL", "接口地址")), baseURL],
-            [Self.label(L("Translate to", "翻译成")), translateTarget],
-            [NSGridCell.emptyContentView, autoName],
-            [NSGridCell.emptyContentView, test],
-            [NSGridCell.emptyContentView, status]
-        ]))
-        load()
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func load() {
-        apiKey.stringValue = AppSettings.apiKey ?? ""
-        model.stringValue = AppSettings.aiModel
-        baseURL.stringValue = AppSettings.aiBaseURL
-        translateTarget.selectItem(withTitle: AppSettings.translateTarget)
-        autoName.state = AppSettings.autoName ? .on : .off
-    }
-
-    func controlTextDidEndEditing(_ obj: Notification) {
-        save()
-    }
-
-    @objc func save() {
-        let key = apiKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if key != (AppSettings.apiKey ?? "") {
-            AppSettings.apiKey = key.isEmpty ? nil : key
-        }
-        let modelName = model.stringValue.trimmingCharacters(in: .whitespaces)
-        AppSettings.aiModel = modelName.isEmpty ? "claude-opus-5-5" : modelName
-        let url = baseURL.stringValue.trimmingCharacters(in: .whitespaces)
-        AppSettings.aiBaseURL = url.isEmpty ? "https://api.anthropic.com" : url
-        AppSettings.translateTarget = translateTarget.titleOfSelectedItem ?? "简体中文"
-        AppSettings.autoName = autoName.state == .on
-    }
-
-    @objc private func testConnection() {
-        save()
-        status.textColor = .secondaryLabelColor
-        status.stringValue = L("Connecting…", "正在连接…")
-        Task { @MainActor in
-            do {
-                let client = try ClaudeClient.configured()
-                _ = try await client.send(system: "只回复 OK。", text: "连接测试", effort: "low")
-                status.textColor = .systemGreen
-                status.stringValue = L("Connected. Model \(client.model) is available.", "连接成功，模型 \(client.model) 可用。")
-            } catch {
-                status.textColor = .systemRed
-                status.stringValue = error.localizedDescription
-            }
-        }
-    }
-}
-
 /// Keyboard keys drawn as small outlined caps, as in "⌃ ⌘ A".
 @MainActor
 final class KeycapRow: NSStackView {
+    private let size: CGFloat
+
+    /// Shows the capture shortcut and follows changes made in settings.
+    static func captureShortcut(size: CGFloat = 13) -> KeycapRow {
+        let row = KeycapRow(keys: HotKeyCenter.shared.current.keys, size: size)
+        NotificationCenter.default.addObserver(forName: HotKeyCenter.didChange, object: nil, queue: .main) { [weak row] _ in
+            MainActor.assumeIsolated { row?.setKeys(HotKeyCenter.shared.current.keys) }
+        }
+        return row
+    }
+
     init(keys: [String], size: CGFloat = 13) {
+        self.size = size
         super.init(frame: .zero)
         spacing = 6
+        setKeys(keys)
+    }
+
+    func setKeys(_ keys: [String]) {
+        arrangedSubviews.forEach { $0.removeFromSuperview() }
         for key in keys {
             let label = NSTextField(labelWithString: key)
             label.font = .systemFont(ofSize: size, weight: .semibold)
@@ -288,4 +214,246 @@ final class KeycapRow: NSStackView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+/// Click "Change…", then press a new shortcut; Esc cancels. The current shortcut is paused while recording.
+@MainActor
+final class ShortcutRecorder: NSStackView {
+    private let keys = KeycapRow.captureShortcut()
+    private let prompt = NSTextField(labelWithString: L("Press a new shortcut…", "请按下新的快捷键…"))
+    private let change = NSButton(title: L("Change…", "修改…"), target: nil, action: nil)
+    private let reset = NSButton(title: L("Restore Default", "恢复默认"), target: nil, action: nil)
+    private let status = NSTextField(wrappingLabelWithString: "")
+    private var monitor: Any?
+    private var resignObserver: NSObjectProtocol?
+
+    init() {
+        super.init(frame: .zero)
+        orientation = .vertical
+        alignment = .leading
+        spacing = 6
+        prompt.font = .systemFont(ofSize: 13)
+        prompt.textColor = .controlAccentColor
+        prompt.isHidden = true
+        for button in [change, reset] {
+            button.bezelStyle = .rounded
+            button.target = self
+        }
+        change.action = #selector(toggleRecording)
+        reset.action = #selector(restoreDefault)
+        status.font = .systemFont(ofSize: 12)
+        status.preferredMaxLayoutWidth = 340
+        status.isHidden = true
+        let row = NSStackView(views: [keys, prompt, change, reset])
+        row.spacing = 10
+        addArrangedSubview(row)
+        addArrangedSubview(status)
+        updateReset()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { stopRecording() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    @objc private func toggleRecording() {
+        monitor == nil ? startRecording() : stopRecording()
+    }
+
+    private func startRecording() {
+        HotKeyCenter.shared.suspend()
+        keys.isHidden = true
+        prompt.isHidden = false
+        change.title = L("Cancel", "取消")
+        showStatus(L("Include ⌃, ⌥, or ⌘ (function keys work alone). Press Esc to cancel.", "需包含 ⌃、⌥ 或 ⌘（F 功能键可单独使用），按 Esc 取消。"), error: false)
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.record(event)
+            return nil
+        }
+        resignObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stopRecording() }
+        }
+    }
+
+    private func stopRecording() {
+        guard let monitor else { return }
+        NSEvent.removeMonitor(monitor)
+        self.monitor = nil
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        resignObserver = nil
+        HotKeyCenter.shared.resume()
+        keys.isHidden = false
+        prompt.isHidden = true
+        change.title = L("Change…", "修改…")
+        if status.textColor != .systemRed { status.isHidden = true }
+        updateReset()
+    }
+
+    private func record(_ event: NSEvent) {
+        let plain = event.modifierFlags.intersection([.control, .option, .shift, .command]).isEmpty
+        if plain, event.keyCode == UInt16(kVK_Escape) {
+            status.isHidden = true
+            stopRecording()
+            return
+        }
+        guard let hotKey = HotKey(event: event) else { return }
+        guard hotKey.isValidGlobalShortcut else {
+            showStatus(L("\(hotKey.symbol) needs ⌃, ⌥, or ⌘.", "\(hotKey.symbol) 需要包含 ⌃、⌥ 或 ⌘。"), error: true)
+            return
+        }
+        apply(hotKey)
+    }
+
+    @objc private func restoreDefault() {
+        stopRecording()
+        apply(AppChannel.defaultHotKey)
+    }
+
+    private func apply(_ hotKey: HotKey) {
+        if HotKeyCenter.shared.change(to: hotKey) {
+            status.isHidden = true
+            status.textColor = .secondaryLabelColor
+        } else {
+            showStatus(L("\(hotKey.symbol) is used by macOS or another app. Try a different shortcut.", "\(hotKey.symbol) 已被系统或其他应用占用，请换一个。"), error: true)
+        }
+        stopRecording()
+    }
+
+    private func showStatus(_ text: String, error: Bool) {
+        status.stringValue = text
+        status.textColor = error ? .systemRed : .secondaryLabelColor
+        status.isHidden = false
+    }
+
+    private func updateReset() {
+        reset.isHidden = HotKeyCenter.shared.current == AppChannel.defaultHotKey
+    }
+}
+
+/// A page of titled sections, each a card, that scrolls when the window is shorter than the content.
+@MainActor
+class SectionedPageView: PageView {
+    private let stack = NSStackView()
+
+    init(title: String) {
+        super.init(title: title, subtitle: "")
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: 40, bottom: 40, right: 40)
+
+        let document = FlippedView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(stack)
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.documentView = document
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        document.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 20),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            stack.topAnchor.constraint(equalTo: document.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor),
+            stack.widthAnchor.constraint(equalToConstant: 640)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Adds a full-width view, such as a card or a footnote.
+    func add(_ view: NSView, spacingBefore: CGFloat? = nil) {
+        if let spacingBefore, let previous = stack.arrangedSubviews.last { stack.setCustomSpacing(spacingBefore, after: previous) }
+        stack.addArrangedSubview(view)
+        view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -80).isActive = true
+    }
+
+    /// A bold heading, with an optional control on the right, followed by a card of rows split by separators.
+    @discardableResult
+    func addSection(_ title: String, accessory: NSView? = nil, rows: [NSView]) -> NSStackView {
+        let heading = NSTextField(labelWithString: title)
+        heading.font = .systemFont(ofSize: 14, weight: .semibold)
+        let headingRow = NSStackView(views: [heading, NSView()] + (accessory.map { [$0] } ?? []))
+        headingRow.alignment = .centerY
+        add(headingRow, spacingBefore: stack.arrangedSubviews.isEmpty ? nil : 28)
+        stack.setCustomSpacing(10, after: headingRow)
+        let list = NSStackView()
+        list.orientation = .vertical
+        list.spacing = 0
+        Self.fill(list, with: rows)
+        add(Self.card(list, inset: NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)))
+        return list
+    }
+
+    /// Replaces the rows of a section list.
+    static func fill(_ list: NSStackView, with rows: [NSView]) {
+        list.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for (index, row) in rows.enumerated() {
+            if index > 0 {
+                let separator = NSBox()
+                separator.boxType = .separator
+                list.addArrangedSubview(separator)
+                separator.widthAnchor.constraint(equalTo: list.widthAnchor, constant: -36).isActive = true
+            }
+            list.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
+        }
+    }
+
+    static func card(_ content: NSView, inset: NSEdgeInsets) -> CardView {
+        let card = CardView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: card.topAnchor, constant: inset.top),
+            content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: inset.left),
+            content.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -inset.right),
+            content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -inset.bottom)
+        ])
+        return card
+    }
+
+    static func footnote(_ text: String) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
+}
+
+/// A rounded, colored square with a white SF Symbol, as in System Settings.
+@MainActor
+final class IconTile: NSView {
+    init(symbol: String, tint: NSColor, size: CGFloat = 30) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = size * 0.27
+        layer?.backgroundColor = tint.cgColor
+        let glyph = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
+        glyph.symbolConfiguration = .init(pointSize: size / 2, weight: .semibold)
+        glyph.contentTintColor = .white
+        glyph.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(glyph)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: size),
+            heightAnchor.constraint(equalToConstant: size),
+            glyph.centerXAnchor.constraint(equalTo: centerXAnchor),
+            glyph.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }

@@ -1,0 +1,10 @@
+// Deploy: cd cdn && npx wrangler deploy
+// Token:  openssl rand -hex 32 | tee >(npx wrangler secret put UPLOAD_TOKEN) | gh secret set CDN_UPLOAD_TOKEN -R thinkany-ai/snapok
+{
+  "name": "snapok-cdn-upload",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-01",
+  "account_id": "6e5237d5b06eb4cdecb2100b511fde81",
+  "workers_dev": true,
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "snapok" }]
+}

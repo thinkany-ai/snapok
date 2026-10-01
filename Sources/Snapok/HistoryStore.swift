@@ -16,16 +16,6 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: "history.retentionDays") }
     }
 
-    static var aiBaseURL: String {
-        get { defaults.string(forKey: "ai.baseURL") ?? "https://api.anthropic.com" }
-        set { defaults.set(newValue, forKey: "ai.baseURL") }
-    }
-
-    static var aiModel: String {
-        get { defaults.string(forKey: "ai.model") ?? "claude-opus-5-5" }
-        set { defaults.set(newValue, forKey: "ai.model") }
-    }
-
     static var translateTarget: String {
         get { defaults.string(forKey: "ai.translateTarget") ?? "简体中文" }
         set { defaults.set(newValue, forKey: "ai.translateTarget") }
@@ -37,6 +27,7 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: "ai.autoName") }
     }
 
+    /// The single Anthropic key of earlier builds; `ModelsStore` moves it into a provider on first use.
     static var apiKey: String? {
         get { Keychain.read(account: "anthropic-api-key") }
         set { Keychain.write(newValue, account: "anthropic-api-key") }

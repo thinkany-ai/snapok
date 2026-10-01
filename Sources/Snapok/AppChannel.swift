@@ -14,20 +14,12 @@ enum AppChannel {
 
     static var keychainService: String { isRelease ? "ai.snapok.mac" : "ai.snapok.mac.dev" }
 
-    /// ⌃⌘A for release, ⇧⌥A for development so both can be open at once.
-    static var hotKeyModifiers: UInt32 {
-        UInt32(isRelease ? controlKey | cmdKey : shiftKey | optionKey)
+    /// ⌃⌘A for release, ⇧⌥A for development so both can be open at once. Users can change it in General settings.
+    static var defaultHotKey: HotKey {
+        isRelease
+            ? HotKey(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(controlKey | cmdKey), key: "A")
+            : HotKey(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(shiftKey | optionKey), key: "A")
     }
-
-    static var menuModifiers: NSEvent.ModifierFlags {
-        isRelease ? [.control, .command] : [.shift, .option]
-    }
-
-    static var hotKeyKeys: [String] { isRelease ? ["⌃", "⌘", "A"] : ["⇧", "⌥", "A"] }
-
-    static var hotKeySymbol: String { hotKeyKeys.joined() }
-
-    static var hotKeyDescription: String { isRelease ? "Control + Command + A" : "Shift + Option + A" }
 
     static var supportDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

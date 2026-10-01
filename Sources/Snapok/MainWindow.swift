@@ -5,12 +5,14 @@ enum MainPage: Int, CaseIterable {
     case library
     case general
     case ai
+    case about
 
     var title: String {
         switch self {
         case .library: return L("Library", "截图库")
         case .general: return L("General", "通用设置")
-        case .ai: return L("AI Settings", "AI 设置")
+        case .ai: return L("Models", "模型")
+        case .about: return L("About", "关于")
         }
     }
 
@@ -18,7 +20,8 @@ enum MainPage: Int, CaseIterable {
         switch self {
         case .library: return "photo.on.rectangle"
         case .general: return "gearshape"
-        case .ai: return "sparkles"
+        case .ai: return "cpu"
+        case .about: return "info.circle"
         }
     }
 }
@@ -36,9 +39,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         didSet { library.onPin = onPin }
     }
 
-    private let library = LibraryPane()
+    private var library = LibraryPane()
     private lazy var general = GeneralSettingsPane()
-    private lazy var ai = AISettingsPane()
+    private lazy var ai = ModelsPane()
+    private lazy var about = AboutPane()
     private let content = ContentBackground()
     private var navItems: [SidebarItem] = []
     private var currentPage: MainPage?
@@ -66,6 +70,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// Rebuilds every view in the current language, keeping the open page and window frame.
+    func relocalize() {
+        let page = currentPage ?? .library
+        window?.contentView?.subviews.forEach { $0.removeFromSuperview() }
+        navItems = []
+        currentPage = nil
+        library = LibraryPane()
+        library.onCapture = onCapture
+        library.onOpen = onOpen
+        library.onPin = onPin
+        general = GeneralSettingsPane()
+        ai = ModelsPane()
+        about = AboutPane()
+        build()
+        show(page)
+    }
+
     func present(_ page: MainPage? = nil) {
         if let page { show(page) }
         HistoryStore.shared.purgeExpired()
@@ -83,6 +104,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .library: view = library
         case .general: general.load(); view = general
         case .ai: ai.load(); view = ai
+        case .about: view = about
         }
         content.subviews.forEach { $0.removeFromSuperview() }
         view.translatesAutoresizingMaskIntoConstraints = false
@@ -171,7 +193,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let hint = NSTextField(wrappingLabelWithString: L("Use the shortcut in any app. Finished screenshots are saved here automatically.", "在任何应用里按快捷键，截图完成后会自动保存到这里。"))
         hint.font = .systemFont(ofSize: 12)
         hint.textColor = .secondaryLabelColor
-        let keys = KeycapRow(keys: AppChannel.hotKeyKeys, size: 12)
+        let keys = KeycapRow.captureShortcut(size: 12)
         let button = PillButton(title: L("Take Screenshot", "开始截图")) { [weak self] in self?.onCapture?() }
         let stack = NSStackView(views: [title, hint, keys, button])
         stack.orientation = .vertical
@@ -322,8 +344,10 @@ final class LibraryPane: PageView, NSCollectionViewDataSource, NSCollectionViewD
         super.init(title: L("Library", "截图库"), subtitle: "")
         build()
         reload()
-        NotificationCenter.default.addObserver(forName: HistoryStore.didChange, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reload() }
+        for name in [HistoryStore.didChange, HotKeyCenter.didChange] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.reload() }
+            }
         }
     }
 
@@ -424,7 +448,7 @@ final class LibraryPane: PageView, NSCollectionViewDataSource, NSCollectionViewD
             : L("\(store.items.count) screenshots · Auto-save is off", "共 \(store.items.count) 张截图 · 自动保存已关闭")
         if store.items.isEmpty {
             empty.stringValue = AppSettings.autoSave
-                ? L("No screenshots yet.\nPress \(AppChannel.hotKeySymbol) to capture your first screenshot.", "还没有截图。\n按 \(AppChannel.hotKeySymbol) 截一张，完成后会自动出现在这里。")
+                ? L("No screenshots yet.\nPress \(HotKeyCenter.shared.current.symbol) to capture your first screenshot.", "还没有截图。\n按 \(HotKeyCenter.shared.current.symbol) 截一张，完成后会自动出现在这里。")
                 : L("Auto-save is off. New screenshots will not appear here.\nYou can enable it in General settings.", "自动保存已关闭，新截图不会进入截图库。\n可以在通用设置里重新打开。")
         } else {
             empty.stringValue = visible.isEmpty ? L("No screenshots found for “\(query)”.", "没有找到「\(query)」相关的截图。") : ""

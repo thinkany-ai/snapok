@@ -94,16 +94,18 @@ enum SensitiveDetector {
 }
 
 enum AIError: LocalizedError {
-    case missingKey
-    case badURL
+    case noModel
+    case missingKey(String)
+    case badURL(String)
     case http(Int, String)
     case refused
     case emptyResponse
 
     var errorDescription: String? {
         switch self {
-        case .missingKey: return L("No API key configured. Add one in Settings → AI Settings.", "还没有设置 API Key。请在「设置 → AI」里填写。")
-        case .badURL: return L("Invalid base URL. Check Settings → AI Settings.", "接口地址无效，请在「设置 → AI」里检查。")
+        case .noModel: return L("No model configured. Add a provider in Settings → Models.", "还没有配置模型。请在「设置 → 模型」里添加服务商。")
+        case .missingKey(let name): return L("\(name) has no API key. Add one in Settings → Models.", "\(name) 还没有填写 API Key。请在「设置 → 模型」里填写。")
+        case .badURL(let name): return L("\(name) has an invalid base URL. Check Settings → Models.", "\(name) 的接口地址无效，请在「设置 → 模型」里检查。")
         case .http(let status, let message): return L("AI service error (\(status)): \(message)", "AI 服务返回错误（\(status)）：\(message)")
         case .refused: return L("The AI service declined to process this screenshot.", "AI 拒绝处理这张截图。")
         case .emptyResponse: return L("The AI service returned no content. Please try again.", "AI 没有返回内容，请稍后重试。")
@@ -111,52 +113,82 @@ enum AIError: LocalizedError {
     }
 }
 
-/// Minimal Claude Messages API client over URLSession (Swift has no official Anthropic SDK).
-struct ClaudeClient {
+/// Calls the configured model over URLSession, in either the Anthropic Messages or the OpenAI-compatible format.
+struct AIClient {
+    let kind: ModelProvider.Kind
+    let endpoint: URL
     let apiKey: String
-    let baseURL: URL
     let model: String
 
+    /// The default model from Settings → Models.
     @MainActor
-    static func configured() throws -> ClaudeClient {
-        guard let key = AppSettings.apiKey else { throw AIError.missingKey }
-        guard let url = URL(string: AppSettings.aiBaseURL.trimmingCharacters(in: .whitespaces)), url.scheme != nil else {
-            throw AIError.badURL
-        }
-        return ClaudeClient(apiKey: key, baseURL: url, model: AppSettings.aiModel)
+    static func configured() throws -> AIClient {
+        guard let target = ModelsStore.config.resolvedDefault else { throw AIError.noModel }
+        return try AIClient(provider: target.provider, model: target.model.id)
     }
 
-    /// Sends one user turn and returns the concatenated text blocks.
+    /// `apiKey` overrides the saved key, for testing a provider before it is saved.
+    init(provider: ModelProvider, model: String, apiKey: String? = nil) throws {
+        let name = provider.name.isEmpty ? L("This provider", "该服务商") : provider.name
+        guard let key = apiKey.flatMap({ $0.isEmpty ? nil : $0 }) ?? provider.apiKey else { throw AIError.missingKey(name) }
+        guard let endpoint = provider.endpoint else { throw AIError.badURL(name) }
+        self.kind = provider.kind
+        self.endpoint = endpoint
+        self.apiKey = key
+        self.model = model
+    }
+
+    /// Only Anthropic's own API takes `output_config` (effort, JSON schema) and server-side fallbacks;
+    /// compatible gateways may reject unknown fields.
+    private var isFirstPartyAnthropic: Bool { kind == .anthropic && endpoint.host == "api.anthropic.com" }
+
+    /// Sends one user turn and returns the reply text. With `schema`, the reply is a JSON object.
     func send(system: String, text: String, imagePNG: Data? = nil, effort: String, schema: [String: Any]? = nil) async throws -> String {
-        var content: [[String: Any]] = []
-        if let imagePNG {
-            content.append(["type": "image", "source": ["type": "base64", "media_type": "image/png", "data": imagePNG.base64EncodedString()]])
+        var prompt = text
+        if let schema, !isFirstPartyAnthropic,
+           let data = try? JSONSerialization.data(withJSONObject: schema, options: [.sortedKeys]), let json = String(data: data, encoding: .utf8) {
+            prompt += "\n\nReply with only a JSON object that matches this JSON Schema, without code fences or other text:\n" + json
         }
-        content.append(["type": "text", "text": text])
 
-        var outputConfig: [String: Any] = ["effort": effort]
-        if let schema {
-            outputConfig["format"] = ["type": "json_schema", "schema": schema]
-        }
-        var body: [String: Any] = [
-            "model": model,
-            "max_tokens": 16000,
-            "system": system,
-            "output_config": outputConfig,
-            "messages": [["role": "user", "content": content]]
-        ]
-
-        var request = URLRequest(url: baseURL.appendingPathComponent("v1/messages"))
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = 180
         request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        // On a safety decline, let the API rerun the request on its recommended fallback model.
-        // Only the first-party API accepts this; gateways at other addresses may reject unknown fields.
-        if baseURL.host == "api.anthropic.com" {
-            request.setValue("server-side-fallback-2026-07-01", forHTTPHeaderField: "anthropic-beta")
-            body["fallbacks"] = "default"
+        let body: [String: Any]
+        switch kind {
+        case .anthropic:
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            var content: [[String: Any]] = []
+            if let imagePNG {
+                content.append(["type": "image", "source": ["type": "base64", "media_type": "image/png", "data": imagePNG.base64EncodedString()]])
+            }
+            content.append(["type": "text", "text": prompt])
+            var anthropic: [String: Any] = [
+                "model": model,
+                "max_tokens": 16000,
+                "system": system,
+                "messages": [["role": "user", "content": content]]
+            ]
+            if isFirstPartyAnthropic {
+                var outputConfig: [String: Any] = ["effort": effort]
+                if let schema { outputConfig["format"] = ["type": "json_schema", "schema": schema] }
+                anthropic["output_config"] = outputConfig
+                // On a safety decline, let the API rerun the request on its recommended fallback model.
+                request.setValue("server-side-fallback-2026-07-01", forHTTPHeaderField: "anthropic-beta")
+                anthropic["fallbacks"] = "default"
+            }
+            body = anthropic
+        case .openai:
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            var content: [[String: Any]] = [["type": "text", "text": prompt]]
+            if let imagePNG {
+                content.append(["type": "image_url", "image_url": ["url": "data:image/png;base64," + imagePNG.base64EncodedString()]])
+            }
+            body = [
+                "model": model,
+                "messages": [["role": "system", "content": system], ["role": "user", "content": content]]
+            ]
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -165,16 +197,47 @@ struct ClaudeClient {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else {
             let message = (json["error"] as? [String: Any])?["message"] as? String
-                ?? String(data: data, encoding: .utf8) ?? ""
+                ?? json["error"] as? String
+                ?? String(data: data.prefix(500), encoding: .utf8) ?? ""
             throw AIError.http(status, message)
         }
-        if json["stop_reason"] as? String == "refusal" {
-            throw AIError.refused
+
+        let reply: String
+        switch kind {
+        case .anthropic:
+            if json["stop_reason"] as? String == "refusal" { throw AIError.refused }
+            let blocks = json["content"] as? [[String: Any]] ?? []
+            reply = blocks.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }.joined()
+        case .openai:
+            let choice = (json["choices"] as? [[String: Any]])?.first
+            if choice?["finish_reason"] as? String == "content_filter" { throw AIError.refused }
+            let message = choice?["message"] as? [String: Any]
+            if let text = message?["content"] as? String {
+                reply = text
+            } else {
+                let parts = message?["content"] as? [[String: Any]] ?? []
+                reply = parts.compactMap { $0["text"] as? String }.joined()
+            }
         }
-        let blocks = json["content"] as? [[String: Any]] ?? []
-        let text = blocks.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }.joined()
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AIError.emptyResponse }
-        return text
+        guard !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AIError.emptyResponse }
+        return reply
+    }
+
+    /// The JSON object in a reply, tolerating code fences or text around it.
+    static func jsonObject(in reply: String) -> [String: Any]? {
+        guard let start = reply.firstIndex(of: "{"), let end = reply.lastIndex(of: "}"), start < end,
+              let data = String(reply[start...end]).data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    /// Settings → Models "Test": a tiny request with the provider's first model.
+    static func test(_ provider: ModelProvider, apiKey: String? = nil) async throws -> String {
+        guard let model = provider.models.first?.id else {
+            throw AIError.http(0, L("Add at least one model first.", "请先填写至少一个模型。"))
+        }
+        let client = try AIClient(provider: provider, model: model, apiKey: apiKey)
+        _ = try await client.send(system: "Reply with the single word OK.", text: "Connection test", effort: "low")
+        return model
     }
 }
 
@@ -186,7 +249,7 @@ enum AIAssistant {
     }
 
     static func translate(_ image: CGImage) async throws -> String {
-        let client = try ClaudeClient.configured()
+        let client = try AIClient.configured()
         let target = AppSettings.translateTarget
         let scan = await TextScanner.scan(image)
         let system = "你是截图翻译助手。把用户提供的截图文字翻译成\(target)。保留原文的分行和列表结构，只输出译文，不要解释。"
@@ -197,13 +260,13 @@ enum AIAssistant {
     }
 
     static func ask(_ question: String, about image: CGImage) async throws -> String {
-        let client = try ClaudeClient.configured()
+        let client = try AIClient.configured()
         let system = L("You are a screenshot assistant. Answer the user's question concisely in English using the screenshot. Say when the answer cannot be determined from the image.", "你是截图助手。用户会给你一张截图和一个问题，结合截图内容用简洁的中文回答；截图里看不出答案时直接说明。")
         return try await client.send(system: system, text: question, imagePNG: visionPNG(image), effort: "medium")
     }
 
     static func titleAndTags(for image: CGImage, ocrText: String) async throws -> (String, [String]) {
-        let client = try ClaudeClient.configured()
+        let client = try AIClient.configured()
         let schema: [String: Any] = [
             "type": "object",
             "properties": [
@@ -220,10 +283,7 @@ enum AIAssistant {
         let text = try await client.send(
             system: "你负责整理用户的截图库。", text: prompt, imagePNG: visionPNG(image), effort: "low", schema: schema
         )
-        guard let data = text.data(using: .utf8),
-              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw AIError.emptyResponse
-        }
+        guard let json = AIClient.jsonObject(in: text) else { throw AIError.emptyResponse }
         let title = (json["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let tags = (json["tags"] as? [String] ?? []).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         return (title, Array(tags.prefix(4)))
@@ -236,7 +296,7 @@ enum AIAssistant {
             let scan = await TextScanner.scan(image)
             HistoryStore.shared.update(item.id) { $0.ocrText = scan.text }
 
-            guard AppSettings.autoName, AppSettings.apiKey != nil else { return }
+            guard AppSettings.autoName, ModelsStore.isConfigured else { return }
             do {
                 let (title, tags) = try await titleAndTags(for: image, ocrText: scan.text)
                 HistoryStore.shared.update(item.id) {

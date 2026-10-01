@@ -31,7 +31,8 @@ func log(_ message: String) {
 @MainActor
 final class SnapokApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
-    private var hotKey: EventHotKeyRef?
+    private var captureMenuItems: [NSMenuItem] = []
+    private var updateMenuItems: [NSMenuItem] = []
     private var screenshotController: ScreenshotController!
     private var mainWindow: MainWindowController?
 
@@ -49,13 +50,26 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         screenshotController = ScreenshotController()
         configureMainMenu()
         configureMenuBar()
-        registerHotKey()
+        HotKeyCenter.shared.onPress = { [weak self] in self?.startScreenshot() }
+        HotKeyCenter.shared.start()
+        updateCaptureShortcut()
+        NotificationCenter.default.addObserver(forName: HotKeyCenter.didChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateCaptureShortcut() }
+        }
+        NotificationCenter.default.addObserver(forName: Updater.didChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateUpdateMenuItems() }
+        }
+        NotificationCenter.default.addObserver(forName: AppLanguage.didChange, object: nil, queue: .main) { [weak self] _ in
+            // Rebuild after the language menu's action returns, since that menu is replaced too.
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.relocalize() } }
+        }
         let hasScreenAccess = CGPreflightScreenCaptureAccess()
         log("screen capture access=\(hasScreenAccess), accessibility=\(AXIsProcessTrusted())")
         if !hasScreenAccess {
             CGRequestScreenCaptureAccess()
         }
         showLibrary()
+        Updater.shared.start()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -74,6 +88,10 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         presentMainWindow(.library)
     }
 
+    @objc private func showAbout() {
+        presentMainWindow(.about)
+    }
+
     private func presentMainWindow(_ page: MainPage) {
         if mainWindow == nil {
             let controller = MainWindowController()
@@ -85,11 +103,26 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         mainWindow?.present(page)
     }
 
+    /// Open editors and pinned images keep their language until they are reopened.
+    private func relocalize() {
+        captureMenuItems = []
+        updateMenuItems = []
+        configureMainMenu()
+        statusItem.menu = makeStatusMenu()
+        updateCaptureShortcut()
+        updateUpdateMenuItems()
+        mainWindow?.relocalize()
+        log("language switched to \(AppLanguage.current.rawValue)")
+    }
+
     private func configureMainMenu() {
         let main = NSMenu()
 
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: L("About ", "关于 ") + AppChannel.displayName, action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: L("About ", "关于 ") + AppChannel.displayName, action: #selector(showAbout), keyEquivalent: "").target = self
+        let update = appMenu.addItem(withTitle: "", action: #selector(checkForUpdates), keyEquivalent: "")
+        update.target = self
+        updateMenuItems.append(update)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: L("Settings…", "设置…"), action: #selector(showPreferences), keyEquivalent: ",").target = self
         appMenu.addItem(.separator())
@@ -100,9 +133,9 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         appMenu.addItem(withTitle: L("Quit ", "退出 ") + AppChannel.displayName, action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         let fileMenu = NSMenu(title: L("File", "文件"))
-        let capture = fileMenu.addItem(withTitle: L("New Screenshot", "新截图"), action: #selector(startScreenshot), keyEquivalent: "a")
-        capture.keyEquivalentModifierMask = AppChannel.menuModifiers
+        let capture = fileMenu.addItem(withTitle: L("New Screenshot", "新截图"), action: #selector(startScreenshot), keyEquivalent: "")
         capture.target = self
+        captureMenuItems.append(capture)
         fileMenu.addItem(withTitle: L("Library", "截图库"), action: #selector(showLibrary), keyEquivalent: "l").target = self
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: L("Close Window", "关闭窗口"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -131,9 +164,7 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if let hotKey {
-            UnregisterEventHotKey(hotKey)
-        }
+        HotKeyCenter.shared.stop()
     }
 
     private func configureMenuBar() {
@@ -145,17 +176,43 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
             statusItem.button?.title = ""
         }
         statusItem.button?.toolTip = AppChannel.displayName
+        statusItem.menu = makeStatusMenu()
+        updateUpdateMenuItems()
+    }
 
+    /// "Check for Updates…" until a newer build is found, then "Install Update…".
+    private func updateUpdateMenuItems() {
+        let title: String
+        if case .available(let release) = Updater.shared.status {
+            let version = Updater.displayVersion(release.version, build: release.build)
+            title = L("Install Update \(version)…", "安装更新 \(version)…")
+        } else {
+            title = L("Check for Updates…", "检查更新…")
+        }
+        for item in updateMenuItems {
+            item.title = title
+            item.isHidden = Updater.shared.status == .unsupported
+        }
+    }
+
+    @objc private func checkForUpdates() {
+        Updater.shared.showOrCheck()
+    }
+
+    private func makeStatusMenu() -> NSMenu {
         let menu = NSMenu()
-        let screenshotItem = NSMenuItem(title: L("Take Screenshot", "开始截图"), action: #selector(startScreenshot), keyEquivalent: "a")
-        screenshotItem.keyEquivalentModifierMask = AppChannel.menuModifiers
+        let screenshotItem = NSMenuItem(title: L("Take Screenshot", "开始截图"), action: #selector(startScreenshot), keyEquivalent: "")
         menu.addItem(screenshotItem)
+        captureMenuItems.append(screenshotItem)
         menu.addItem(NSMenuItem(title: L("Open Library", "打开截图库"), action: #selector(showLibrary), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L("Enable Component Snapping…", "启用组件自动吸附…"), action: #selector(enableComponentFocus), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L("Settings…", "设置…"), action: #selector(showPreferences), keyEquivalent: ","))
+        let update = NSMenuItem(title: "", action: #selector(checkForUpdates), keyEquivalent: "")
+        menu.addItem(update)
+        updateMenuItems.append(update)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: L("Quit ", "退出 ") + AppChannel.displayName, action: #selector(quit), keyEquivalent: "q"))
-        statusItem.menu = menu
+        return menu
     }
 
     @objc private func enableComponentFocus() {
@@ -166,42 +223,12 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func registerHotKey() {
-        let hotKeyID = EventHotKeyID(signature: OSType(0x534E4150), id: 1)
-        let modifiers = AppChannel.hotKeyModifiers
-        let keyCode = UInt32(kVK_ANSI_A)
-
-        let status = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKey)
-        if status != noErr {
-            log("failed to register hotkey, status=\(status)")
-        } else {
-            log("hotkey registered")
+    private func updateCaptureShortcut() {
+        let hotKey = HotKeyCenter.shared.current
+        for item in captureMenuItems {
+            item.keyEquivalent = hotKey.menuKeyEquivalent
+            item.keyEquivalentModifierMask = hotKey.menuModifiers
         }
-
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
-            var hotKeyID = EventHotKeyID()
-            GetEventParameter(
-                event,
-                EventParamName(kEventParamDirectObject),
-                EventParamType(typeEventHotKeyID),
-                nil,
-                MemoryLayout<EventHotKeyID>.size,
-                nil,
-                &hotKeyID
-            )
-
-            guard hotKeyID.signature == OSType(0x534E4150), hotKeyID.id == 1 else {
-                return noErr
-            }
-
-            log("hotkey pressed")
-            let app = Unmanaged<SnapokApp>.fromOpaque(userData!).takeUnretainedValue()
-            Task { @MainActor in
-                app.startScreenshot()
-            }
-            return noErr
-        }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), nil)
     }
 
     @objc private func startScreenshot() {
@@ -625,7 +652,7 @@ final class PreferencesView: NSView {
         addSubview(title)
 
         let lines = [
-            L("Screenshot shortcut: ", "截图快捷键：") + AppChannel.hotKeyDescription,
+            L("Screenshot shortcut: ", "截图快捷键：") + HotKeyCenter.shared.current.description,
             L("Hover to snap to a component; click to select; drag to capture a region", "悬停吸附组件；单击确认；拖动框选"),
             L("Scroll to select parent regions; hold Option to select the whole window", "滚轮切换父级区域；按住 Option 选择整窗"),
             L("Drag inside to move; drag an edge or handle to resize", "拖动选区内部移动，拖动边框或控制点调整大小"),

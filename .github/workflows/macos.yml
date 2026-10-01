@@ -42,6 +42,7 @@ jobs:
           ./scripts/test-background.sh
           ./scripts/test-editor.sh
           ./scripts/test-history.sh
+          ./scripts/test-updates.sh
 
       - name: Check signing configuration
         id: signing
@@ -85,6 +86,12 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
           rm -f "$CERT_PATH"
 
+      - name: Check tag matches app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Resources/Info.plist)
+          [[ "v$VERSION" == "$GITHUB_REF_NAME" ]] || { echo "::error::Tag $GITHUB_REF_NAME does not match Info.plist version $VERSION"; exit 1; }
+
       - name: Build Universal DMG and ZIP
         env:
           SIGNING_READY: ${{ steps.signing.outputs.ready }}
@@ -108,6 +115,27 @@ jobs:
           else
             ./scripts/package-macos.sh --unsigned
           fi
+
+      # Signed pushes go to https://cdn.snapok.app, which the in-app updater reads:
+      # dev branch → dev/latest.json (Snapok Dev), v* tags → latest.json (Snapok).
+      - name: Publish to CDN
+        if: github.event_name == 'push' && steps.signing.outputs.ready == 'true'
+        env:
+          CDN_UPLOAD_TOKEN: ${{ secrets.CDN_UPLOAD_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CDN_UPLOAD_TOKEN" ]]; then
+            echo '::warning::CDN_UPLOAD_TOKEN is not configured; the update feed was not published.'
+            exit 0
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            export CHANNEL=release
+            export NOTES="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")"
+          else
+            export CHANNEL=dev
+            export NOTES="$(git log -1 --format=%s)"
+          fi
+          ./scripts/publish-cdn.sh dist/archives/*.dmg dist/archives/*.zip
 
       - uses: actions/upload-artifact@v7.0.1
         with:

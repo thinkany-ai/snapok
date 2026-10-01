@@ -11,14 +11,27 @@ enum AppLanguage: String, CaseIterable, Sendable {
         AppLanguage(rawValue: defaults.string(forKey: preferenceKey) ?? "") ?? .english
     }
 
+    static let didChange = Notification.Name("AppLanguage.didChange")
+
     func save(in defaults: UserDefaults = .standard) {
         defaults.set(rawValue, forKey: Self.preferenceKey)
         // Let AppKit's standard dialogs use the same language on the next launch.
         defaults.set([rawValue], forKey: "AppleLanguages")
     }
 
-    // Keep one language throughout a session, including already-open editors.
-    static let current = saved()
+    // Read once at launch; afterwards only `switchTo` changes it, so stray preference writes never
+    // half-translate the UI. Written on the main thread only.
+    nonisolated(unsafe) private static var active = saved()
+
+    static var current: AppLanguage { active }
+
+    /// Saves the choice and switches the running app; observers of `didChange` rebuild their text.
+    static func switchTo(_ language: AppLanguage, in defaults: UserDefaults = .standard) {
+        language.save(in: defaults)
+        guard language != active else { return }
+        active = language
+        NotificationCenter.default.post(name: didChange, object: nil)
+    }
 
     var locale: Locale { Locale(identifier: rawValue) }
 
