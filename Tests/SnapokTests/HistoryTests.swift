@@ -1,0 +1,71 @@
+import AppKit
+extension Bundle { static var module: Bundle { .main } }
+
+@main @MainActor
+struct HistoryTests {
+    static func main() async throws {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.prohibited)
+
+        // Annotations survive a JSON round trip, including color and kind.
+        let annotations = [
+            Annotation(kind: .arrow, rect: CGRect(x: 10, y: 20, width: 30, height: 40), points: [CGPoint(x: 10, y: 20), CGPoint(x: 40, y: 60)],
+                       color: NSColor(srgbRed: 0.2, green: 0.4, blue: 0.6, alpha: 1), sizeLevel: 2),
+            Annotation(kind: .text, rect: CGRect(x: 5, y: 5, width: 50, height: 20), points: [], text: "你好", color: .white, sizeLevel: 0)
+        ]
+        let decoded = try JSONDecoder().decode([Annotation].self, from: JSONEncoder().encode(annotations))
+        precondition(decoded.count == 2 && decoded[0].kind == .arrow && decoded[1].text == "你好", "annotations must round-trip")
+        precondition(decoded[0].color.matches(annotations[0].color) && decoded[0].points == annotations[0].points, "color and points must round-trip")
+
+        // Sensitive values are found; ordinary words are not.
+        let sample = "联系 13812345678 或 dev@example.com，密码: hunter2-secret，key sk-ant-abcdefghijklmnopqrstuv"
+        let found = SensitiveDetector.ranges(in: sample).map { String(sample[$0]) }
+        for expected in ["13812345678", "dev@example.com", "hunter2-secret，key", "sk-ant-abcdefghijklmnopqrstuv"] where !found.contains(where: { $0.hasPrefix(expected.prefix(8)) }) {
+            preconditionFailure("missed sensitive value \(expected); found \(found)")
+        }
+        precondition(SensitiveDetector.ranges(in: "截图工具 Snapok version 2").isEmpty, "plain text must not be flagged")
+
+        // A mosaic mask covers its box, with a zigzag when the box is taller than the widest brush.
+        let tall = SensitiveDetector.mosaic(covering: CGRect(x: 0, y: 0, width: 200, height: 90))
+        precondition(tall.kind == .mosaic && tall.points.count >= 4, "tall boxes need several mosaic rows")
+        let short = SensitiveDetector.mosaic(covering: CGRect(x: 0, y: 0, width: 120, height: 10))
+        precondition(short.points.count == 2 && short.lineWidth >= 16, "short boxes take one stroke wide enough to cover them")
+
+        // The store writes, updates, reloads and deletes in a scratch folder.
+        let image = render("Email: dev@example.com  Phone: 13812345678", size: CGSize(width: 900, height: 120))
+        let store = HistoryStore.shared
+        precondition(store.root.path.hasPrefix(NSTemporaryDirectory()) || store.root.path.hasPrefix("/private/var") || store.root.path.hasPrefix("/var"),
+                     "tests must use a scratch history folder")
+        guard let item = store.add(original: image, annotations: annotations) else { preconditionFailure("add failed") }
+        precondition(store.items.first?.id == item.id && item.pixelSize == CGSize(width: 1800, height: 240), "item keeps pixel size")
+        precondition(store.thumbnail(for: item) != nil && store.original(for: item)?.size == image.size, "original and thumbnail stored")
+        store.update(item.id, regenerateThumbnail: true) { $0.title = "测试"; $0.annotations = [] }
+        precondition(store.item(item.id)?.title == "测试" && store.item(item.id)?.annotations.isEmpty == true, "update persists")
+        precondition(store.items.first?.matches("测试") == true && store.items.first?.matches("不存在") == false, "search matches titles")
+        let rendered = store.rendered(for: store.item(item.id)!)
+        precondition(rendered?.size == image.size, "rendered copy keeps point size")
+        store.delete([item.id])
+        precondition(store.item(item.id) == nil && !FileManager.default.fileExists(atPath: store.root.appendingPathComponent(item.id.uuidString).path),
+                     "delete removes the folder")
+
+        // On-device text recognition reads the text and boxes the sensitive values.
+        let scan = await TextScanner.scan(image.cgImage(forProposedRect: nil, context: nil, hints: nil)!)
+        precondition(scan.text.contains("example.com"), "OCR must read the rendered text, got: \(scan.text)")
+        precondition(scan.sensitiveBoxes.count >= 2, "email and phone must be boxed, got \(scan.sensitiveBoxes.count)")
+
+        print("Passed history checks: annotation coding, sensitive detection, mosaic coverage, store lifecycle, on-device OCR")
+    }
+
+    static func render(_ text: String, size: CGSize) -> NSImage {
+        let context = CGContext(data: nil, width: Int(size.width * 2), height: Int(size.height * 2), bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: size.width * 2, height: size.height * 2))
+        context.scaleBy(x: 2, y: 2)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        text.draw(at: CGPoint(x: 20, y: 40), withAttributes: [.font: NSFont.systemFont(ofSize: 32), .foregroundColor: NSColor.black])
+        NSGraphicsContext.restoreGraphicsState()
+        return NSImage(cgImage: context.makeImage()!, size: size)
+    }
+}

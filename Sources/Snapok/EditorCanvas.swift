@@ -75,6 +75,13 @@ final class BackgroundPreview: NSView {
         selectedIndex = nil
         changed()
     }
+    /// Adds annotations as one undoable step.
+    func append(_ newAnnotations: [Annotation]) {
+        guard !newAnnotations.isEmpty else { return }
+        record()
+        annotations += newAnnotations
+        changed()
+    }
     func deleteSelected() {
         guard let index = selectedIndex else { return }
         record(); annotations.remove(at: index); selectedIndex = nil; changed()
@@ -149,12 +156,12 @@ final class BackgroundPreview: NSView {
     private func editText(at point: CGPoint, index: Int?) {
         guard let window else { return }
         let alert = NSAlert()
-        alert.messageText = index == nil ? "添加文字" : "编辑文字"
+        alert.messageText = index == nil ? L("Add Text", "添加文字") : L("Edit Text", "编辑文字")
         let input = NSTextField(frame: CGRect(x: 0, y: 0, width: 320, height: 26))
         input.stringValue = index.map { annotations[$0].text } ?? ""
         alert.accessoryView = input
-        alert.addButton(withTitle: "确定")
-        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: L("OK", "确定"))
+        alert.addButton(withTitle: L("Cancel", "取消"))
         alert.window.initialFirstResponder = input
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn, !input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }

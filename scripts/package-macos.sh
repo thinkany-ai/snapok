@@ -11,11 +11,18 @@ if [[ "$MODE" == --signed ]]; then
   done
 fi
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Resources/Info.plist)
-SUFFIX="${PACKAGE_SUFFIX:-dev}"
+# CHANNEL=dev (default) packages "Snapok Dev"; CHANNEL=release packages "Snapok".
+export CHANNEL="${CHANNEL:-dev}"
+case "$CHANNEL" in
+  release) APP_NAME="Snapok"; FILE_PREFIX="Snapok" ;;
+  dev) APP_NAME="Snapok Dev"; FILE_PREFIX="Snapok-Dev" ;;
+  *) echo "CHANNEL must be dev or release" >&2; exit 1 ;;
+esac
+SUFFIX="${PACKAGE_SUFFIX:-$CHANNEL}"
 [[ "$SUFFIX" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "Invalid PACKAGE_SUFFIX" >&2; exit 1; }
-APP="$ROOT_DIR/dist/SnapAny.app"
+APP="$ROOT_DIR/dist/$APP_NAME.app"
 ARCHIVES="$ROOT_DIR/dist/archives"
-NAME="SnapAny-$VERSION-$SUFFIX-universal"
+NAME="$FILE_PREFIX-$VERSION-$SUFFIX-universal"
 [[ "$MODE" == --signed ]] || NAME="$NAME-unsigned"
 mkdir -p "$ARCHIVES"
 STAGING="$(mktemp -d)"
@@ -46,9 +53,9 @@ fi
 
 ditto -c -k --keepParent "$APP" "$ARCHIVES/$NAME.zip"
 mkdir "$STAGING/dmg"
-ditto "$APP" "$STAGING/dmg/SnapAny.app"
+ditto "$APP" "$STAGING/dmg/$APP_NAME.app"
 ln -s /Applications "$STAGING/dmg/Applications"
-hdiutil create -volname SnapAny -srcfolder "$STAGING/dmg" -ov -format UDZO "$ARCHIVES/$NAME.dmg"
+hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING/dmg" -ov -format UDZO "$ARCHIVES/$NAME.dmg"
 if [[ "$MODE" == --signed ]]; then
   codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$ARCHIVES/$NAME.dmg"
   notarize "$ARCHIVES/$NAME.dmg"

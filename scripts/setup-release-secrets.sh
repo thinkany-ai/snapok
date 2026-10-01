@@ -10,7 +10,7 @@
 #   - gh 已登录且对仓库有 admin 权限
 set -euo pipefail
 
-REPO="${REPO:-thinkany-ai/snapany}"
+REPO="${REPO:-thinkany-ai/snapok}"
 P12="${1:?usage: $0 path/to/DeveloperID.p12}"
 [ -f "$P12" ] || { echo "not found: $P12" >&2; exit 1; }
 

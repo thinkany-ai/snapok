@@ -5,13 +5,17 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleExecutable</key>
-  <string>SnapAny</string>
+  <string>Snapok</string>
   <key>CFBundleIdentifier</key>
-  <string>ai.snapany.mac.test</string>
+  <string>ai.snapok.mac</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>SnapAny</string>
+  <string>Snapok</string>
+  <key>CFBundleDisplayName</key>
+  <string>Snapok</string>
+  <key>SnapokChannel</key>
+  <string>release</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundlePackageType</key>
@@ -23,10 +27,10 @@
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>LSUIElement</key>
-  <true/>
+  <false/>
   <key>NSHumanReadableCopyright</key>
-  <string>Copyright © 2026 SnapAny.</string>
+  <string>Copyright © 2026 Snapok.</string>
   <key>NSScreenCaptureDescription</key>
-  <string>SnapAny needs screen capture access to let you select, annotate, copy, save, and pin screenshots.</string>
+  <string>Snapok needs screen capture access to let you select, annotate, copy, save, and pin screenshots.</string>
 </dict>
 </plist>

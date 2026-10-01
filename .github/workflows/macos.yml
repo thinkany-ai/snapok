@@ -3,9 +3,17 @@ name: macOS packages
 on:
   push:
     branches: [dev]
+    # Version tags (v1.2.3) build the release channel; everything else builds Snapok Dev.
+    tags: ['v*']
   pull_request:
     branches: [dev]
   workflow_dispatch:
+    inputs:
+      channel:
+        description: Build channel
+        type: choice
+        options: [dev, release]
+        default: dev
 
 permissions:
   contents: read
@@ -29,9 +37,11 @@ jobs:
 
       - name: Test
         run: |
+          ./scripts/test-localization.sh
           ./scripts/test-focus.sh
           ./scripts/test-background.sh
           ./scripts/test-editor.sh
+          ./scripts/test-history.sh
 
       - name: Check signing configuration
         id: signing
@@ -62,8 +72,8 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
-          CERT_PATH="$RUNNER_TEMP/snapany-cert.p12"
-          KEYCHAIN="$RUNNER_TEMP/snapany-signing.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/snapok-cert.p12"
+          KEYCHAIN="$RUNNER_TEMP/snapok-signing.keychain-db"
           KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
           echo "::add-mask::$KEYCHAIN_PASSWORD"
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
@@ -83,9 +93,16 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           BUILD_NUMBER: ${{ github.run_number }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
         run: |
           set -euo pipefail
-          export PACKAGE_SUFFIX="dev-${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:7}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            export CHANNEL=release
+            export PACKAGE_SUFFIX="${GITHUB_REF_NAME}"
+          else
+            export CHANNEL="${INPUT_CHANNEL:-dev}"
+            export PACKAGE_SUFFIX="${CHANNEL}-${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:7}"
+          fi
           if [[ "$SIGNING_READY" == true ]]; then
             ./scripts/package-macos.sh --signed
           else
@@ -94,7 +111,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: SnapAny-macos-${{ github.sha }}
+          name: Snapok-macos-${{ github.sha }}
           path: |
             dist/archives/*.dmg
             dist/archives/*.zip
@@ -108,7 +125,7 @@ jobs:
           SIGNING_READY: ${{ steps.signing.outputs.ready }}
         run: |
           {
-            echo '## SnapAny macOS installer'
+            echo '## Snapok macOS installer'
             echo 'Download the artifact attached to this run for the Universal DMG, ZIP and SHA-256 checksums.'
             echo 'Requires macOS 14 or later; supports Apple Silicon and Intel.'
             if [[ "$SIGNING_READY" == true ]]; then
@@ -121,5 +138,5 @@ jobs:
       - name: Remove signing material
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/snapany-cert.p12"
-          security delete-keychain "$RUNNER_TEMP/snapany-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/snapok-cert.p12"
+          security delete-keychain "$RUNNER_TEMP/snapok-signing.keychain-db" 2>/dev/null || true

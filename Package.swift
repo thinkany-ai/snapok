@@ -3,16 +3,16 @@
 import PackageDescription
 
 let package = Package(
-    name: "SnapAny",
+    name: "Snapok",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "SnapAny", targets: ["SnapAny"])
+        .executable(name: "Snapok", targets: ["Snapok"])
     ],
     targets: [
         .executableTarget(
-            name: "SnapAny",
+            name: "Snapok",
             resources: [.copy("Resources/Logo.png"), .copy("Resources/AppIcon.png")],
             linkerSettings: [
                 .linkedFramework("AppKit"),

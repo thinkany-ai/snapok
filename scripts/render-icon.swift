@@ -1,10 +1,14 @@
-// Renders the SnapAny app icon: swift scripts/render-icon.swift Resources/Brand/SnapAnyFamily.png
+// Renders the Snapok app icon: swift scripts/render-icon.swift Resources/Brand/SnapokFamily.png
+// Development icon: swift scripts/render-icon.swift --dev Resources/Brand/SnapokFamily-Dev.png
 // Family style shared with TypeAny / MailAny: gradient tile on the 824pt macOS grid,
-// soft white shapes, vertical pill eyes. SnapAny's character is the selection itself:
+// soft white shapes, vertical pill eyes. Snapok's character is the selection itself:
 // a nearly closed rounded frame, open at the top-right and bottom-left corners, with the eyes inside.
 import AppKit
 
-let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "icon.png"
+// Pass --dev to add the "DEV" badge used by development builds.
+let arguments = CommandLine.arguments.dropFirst()
+let isDev = arguments.contains("--dev")
+let out = arguments.first { $0 != "--dev" } ?? "icon.png"
 
 func rgb(_ hex: UInt32, _ a: CGFloat = 1) -> CGColor {
     CGColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255, blue: CGFloat(hex & 0xFF) / 255, alpha: a)
@@ -70,11 +74,11 @@ gradient(tile, tileTop, tileBottom)
 
 // Frame: sample the rounded-square centerline clockwise, starting at the left end of the top edge,
 // then stroke every run between the gaps with round caps.
-let outer: CGFloat = 476
-let thickness: CGFloat = 78
-let visibleGap: CGFloat = 30
+let outer: CGFloat = 520
+let thickness: CGFloat = 84
+let visibleGap: CGFloat = 32
 let side = outer - thickness
-let radius: CGFloat = 112
+let radius: CGFloat = 122
 let center = CGRect(x: 512 - side / 2, y: 512 - side / 2, width: side, height: side)
 
 var points: [CGPoint] = []
@@ -140,10 +144,31 @@ for (i, gap) in gaps.enumerated() {
 }
 
 // Eyes.
-let eye = CGSize(width: 58, height: 136)
-for dx: CGFloat in [-72, 72] {
+let eye = CGSize(width: 62, height: 146)
+for dx: CGFloat in [-78, 78] {
     let rect = CGRect(x: 512 + dx - eye.width / 2, y: 512 - eye.height / 2, width: eye.width, height: eye.height)
     softWhite(CGPath(roundedRect: rect, cornerWidth: eye.width / 2, cornerHeight: eye.width / 2, transform: nil), shadowOffset: 8, blur: 20)
+}
+
+// Development badge: a dark pill under the frame, readable down to Dock size.
+if isDev {
+    let badge = CGRect(x: 512 - 150, y: 128, width: 300, height: 104)
+    ctx.saveGState()
+    ctx.setShadow(offset: CGSize(width: 0, height: -6), blur: 14, color: rgb(0x000000, 0.3))
+    ctx.addPath(CGPath(roundedRect: badge, cornerWidth: 52, cornerHeight: 52, transform: nil))
+    ctx.setFillColor(rgb(0x1F2937))
+    ctx.fillPath()
+    ctx.restoreGState()
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+    let text = NSAttributedString(string: "DEV", attributes: [
+        .font: NSFont.systemFont(ofSize: 72, weight: .heavy),
+        .foregroundColor: NSColor.white,
+        .kern: 6
+    ])
+    let size = text.size()
+    text.draw(at: CGPoint(x: badge.midX - size.width / 2 + 3, y: badge.midY - size.height / 2))
+    NSGraphicsContext.restoreGraphicsState()
 }
 
 let rep = NSBitmapImageRep(cgImage: ctx.makeImage()!)

@@ -1,0 +1,3 @@
+Drawn in code by scripts/render-icon.swift (run: swift scripts/render-icon.swift Resources/Brand/SnapokFamily.png).
+Family style shared with TypeAny / MailAny: soft light-pink gradient tile (#FFA9D4 -> #F472B6) on the 824pt macOS grid, soft white shapes, vertical pill eyes, element size matched to the other icons.
+Snapok character: a nearly closed white selection frame with small gaps at the top-right and bottom-left corners, white pill eyes inside.

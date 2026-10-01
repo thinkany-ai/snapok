@@ -10,5 +10,6 @@ for file in "$ROOT_DIR"/Sources/Snapok/*.swift; do
   [[ "$(basename "$file")" == SnapokApp.swift ]] || SOURCES+=("$file")
 done
 swiftc -swift-version 6 -target "$(uname -m)-apple-macos14.0" -parse-as-library \
-  "${SOURCES[@]}" "$TEST_DIR/AppSource.swift" "$ROOT_DIR/Tests/SnapokTests/EditorCanvasTests.swift" -o "$TEST_DIR/editor-tests"
-"$TEST_DIR/editor-tests" "$@"
+  "${SOURCES[@]}" "$TEST_DIR/AppSource.swift" "$ROOT_DIR/Tests/SnapokTests/HistoryTests.swift" -o "$TEST_DIR/history-tests"
+# Keep the real screenshot library untouched.
+SNAPOK_HISTORY_DIR="$TEST_DIR/history" "$TEST_DIR/history-tests" "$@"

@@ -8,7 +8,7 @@ Apple API references:
 - https://developer.apple.com/documentation/applicationservices/1462077-axuielementcopyelementatposition
 - https://developer.apple.com/documentation/applicationservices/1459345-axuielementsetmessagingtimeout
 
-Manual acceptance checks (requires granting Accessibility to the built SnapAny app):
+Manual acceptance checks (requires granting Accessibility to the built Snapok app):
 1. Start capture over a native application. Move between toolbar buttons, content, and sidebar: the highlighted bounds should follow the accessible component.
 2. Scroll up through parent regions to the window; scroll down to return. Hold Option to force the full window, release to resume component detection.
 3. Click to lock a region; subsequent movement must not change it. Drag from the initial preview to create a custom selection. Right-click to reselect.
@@ -17,3 +17,7 @@ Manual acceptance checks (requires granting Accessibility to the built SnapAny a
 6. Cancel while a slow app is being queried; no delayed selection may appear after cancelling or in a subsequent capture.
 
 Automated geometry checks: run `./scripts/test-focus.sh`. This uses a standalone Swift test executable and does not require XCTest or a full Xcode installation.
+
+System UI targets include the menu bar, status items, and the visible Dock. Menu-bar hit tests use the application that was frontmost before capture. Status items keep the full bar as their parent selection. Dock geometry comes from its AXList rather than the potentially full-screen compositor window. Hidden/offscreen Dock strips and desktop/wallpaper surfaces are rejected. Dock geometry on macOS versions exposing a full-screen compositor surface requires Accessibility permission.
+
+Additional checks: hover Dock icons and menu/status items, scroll to select their entire container, and hold Option for the whole Dock/menu bar. Check bottom/left/right Dock placement and secondary displays. `./scripts/test-focus.sh --live` inspects visible system targets and AX components (requires a visible Dock and Accessibility permission).
