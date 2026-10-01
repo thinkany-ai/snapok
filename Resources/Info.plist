@@ -7,7 +7,7 @@
   <key>CFBundleExecutable</key>
   <string>Snapok</string>
   <key>CFBundleIdentifier</key>
-  <string>ai.snapok.mac</string>
+  <string>ai.thinkany.snapok</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -21,7 +21,7 @@
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>0.1.1</string>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>LSMinimumSystemVersion</key>

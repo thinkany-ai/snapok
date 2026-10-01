@@ -12,7 +12,8 @@ enum AppChannel {
     /// Application Support and log folder names; UserDefaults are already split by bundle identifier.
     static var dataFolderName: String { displayName }
 
-    static var keychainService: String { isRelease ? "ai.snapok.mac" : "ai.snapok.mac.dev" }
+    /// Matches the bundle identifier `scripts/build-app.sh` sets for the channel.
+    static var keychainService: String { isRelease ? "ai.thinkany.snapok" : "ai.thinkany.snapok.dev" }
 
     /// ⌃⌘A for release, ⇧⌥A for development so both can be open at once. Users can change it in General settings.
     static var defaultHotKey: HotKey {
@@ -28,6 +29,44 @@ enum AppChannel {
 
     static var logURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/\(dataFolderName).log")
+    }
+}
+
+/// One-time copy of settings and Keychain items from the 0.1.0 bundle identifiers
+/// (`ai.snapok.mac`, `ai.snapok.mac.dev`) into this channel's `ai.thinkany.snapok` identity.
+/// Runs before anything reads preferences; the screenshot library is keyed by name and needs no move.
+enum BundleIDMigration {
+    private static let doneKey = "migration.bundleID.done"
+
+    static func run() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: doneKey) else { return }
+        defer { defaults.set(true, forKey: doneKey) }
+        let old = AppChannel.isRelease ? "ai.snapok.mac" : "ai.snapok.mac.dev"
+
+        if let values = UserDefaults.standard.persistentDomain(forName: old) {
+            for (key, value) in values where defaults.object(forKey: key) == nil {
+                defaults.set(value, forKey: key)
+            }
+        }
+
+        // Attributes only first, so nothing is read (or prompted for) when there are no items.
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: old,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let items = result as? [[String: Any]] else { return }
+        for account in items.compactMap({ $0[kSecAttrAccount as String] as? String })
+        where Keychain.read(account: account) == nil {
+            if let value = Keychain.read(account: account, service: old) {
+                Keychain.write(value, account: account)
+            }
+        }
+        log("copied settings and \(items.count) Keychain item(s) from \(old)")
     }
 }
 

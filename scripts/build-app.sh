@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ./scripts/build-app.sh [release|debug] [--universal]
-# CHANNEL=dev (default) builds "Snapok Dev" (ai.snapok.mac.dev); CHANNEL=release builds "Snapok" (ai.snapok.mac).
+# CHANNEL=dev (default) builds "Snapok Dev" (ai.thinkany.snapok.dev); CHANNEL=release builds "Snapok" (ai.thinkany.snapok).
 # The two channels install side by side with separate data, settings, Keychain items, and hotkeys.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,8 +10,8 @@ CHANNEL="${CHANNEL:-dev}"
 [[ "$CONFIGURATION" == release || "$CONFIGURATION" == debug ]] || { echo "Expected release or debug" >&2; exit 1; }
 [[ -z "$MODE" || "$MODE" == --universal ]] || { echo "Expected --universal" >&2; exit 1; }
 case "$CHANNEL" in
-  release) APP_NAME="Snapok"; BUNDLE_ID="ai.snapok.mac"; ICON="SnapokFamily" ;;
-  dev) APP_NAME="Snapok Dev"; BUNDLE_ID="ai.snapok.mac.dev"; ICON="SnapokFamily-Dev" ;;
+  release) APP_NAME="Snapok"; BUNDLE_ID="ai.thinkany.snapok"; ICON="SnapokFamily" ;;
+  dev) APP_NAME="Snapok Dev"; BUNDLE_ID="ai.thinkany.snapok.dev"; ICON="SnapokFamily-Dev" ;;
   *) echo "CHANNEL must be dev or release" >&2; exit 1 ;;
 esac
 APP_DIR="$ROOT_DIR/dist/$APP_NAME.app"

@@ -121,13 +121,13 @@ Local builds default to the development channel; set `CHANNEL=release` for the r
 | --- | --- | --- |
 | Build | `./scripts/build-app.sh release` | `CHANNEL=release ./scripts/build-app.sh release` |
 | App | `dist/Snapok Dev.app`, DEV badge on the icon | `dist/Snapok.app` |
-| Bundle identifier | `ai.snapok.mac.dev` | `ai.snapok.mac` |
+| Bundle identifier | `ai.thinkany.snapok.dev` | `ai.thinkany.snapok` |
 | Screenshot library | `~/Library/Application Support/Snapok Dev/` | `~/Library/Application Support/Snapok/` |
-| Settings / Keychain service | `ai.snapok.mac.dev` | `ai.snapok.mac` |
+| Settings / Keychain service | `ai.thinkany.snapok.dev` | `ai.thinkany.snapok` |
 | Log | `~/Library/Logs/Snapok Dev.log` | `~/Library/Logs/Snapok.log` |
 | Default capture hotkey | `⌥⇧A` | `⌃⌘A` |
 
-The channel is stored as `SnapokChannel` in Info.plist; `swift run` counts as development. Each channel needs its own Screen Recording (and, for component focus, Accessibility) permission. On first launch, the development build moves the library, settings, and API key from pre-rename SnapAny builds into its own storage; the release build starts empty.
+The channel is stored as `SnapokChannel` in Info.plist; `swift run` counts as development. Each channel needs its own Screen Recording (and, for component focus, Accessibility) permission. On first launch, the development build moves the library, settings, and API key from pre-rename SnapAny builds into its own storage; the release build starts empty. Builds since 0.1.1 also copy settings and Keychain items from the 0.1.0 identifiers (`ai.snapok.mac`, `ai.snapok.mac.dev`); 0.1.0 installs can't update across the identifier change and need one manual reinstall.
 
 CI builds the development channel for `dev` pushes and pull requests, and the release channel for `v*` tags or a manual run with `channel: release`.
 

@@ -37,6 +37,7 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
     private var mainWindow: MainWindowController?
 
     static func main() {
+        BundleIDMigration.run()
         AppLanguage.current.save()
         let app = NSApplication.shared
         let delegate = SnapokApp()
