@@ -1,0 +1,125 @@
+name: macOS packages
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          swift --version
+          xcodebuild -version
+
+      - name: Test
+        run: |
+          ./scripts/test-focus.sh
+          ./scripts/test-background.sh
+          ./scripts/test-editor.sh
+
+      - name: Check signing configuration
+        id: signing
+        if: github.event_name != 'pull_request'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APPLE_CERTIFICATE" ]]; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::No Developer ID certificate configured. Building ad-hoc signed, unnotarized development packages.'
+          else
+            for name in APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              [[ -n "${!name}" ]] || { echo "::error::Missing secret $name"; exit 1; }
+            done
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import Developer ID certificate
+        if: steps.signing.outputs.ready == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/snapany-cert.p12"
+          KEYCHAIN="$RUNNER_TEMP/snapany-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
+          rm -f "$CERT_PATH"
+
+      - name: Build Universal DMG and ZIP
+        env:
+          SIGNING_READY: ${{ steps.signing.outputs.ready }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          export PACKAGE_SUFFIX="dev-${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:7}"
+          if [[ "$SIGNING_READY" == true ]]; then
+            ./scripts/package-macos.sh --signed
+          else
+            ./scripts/package-macos.sh --unsigned
+          fi
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: SnapAny-macos-${{ github.sha }}
+          path: |
+            dist/archives/*.dmg
+            dist/archives/*.zip
+            dist/archives/*-SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Build summary
+        env:
+          SIGNING_READY: ${{ steps.signing.outputs.ready }}
+        run: |
+          {
+            echo '## SnapAny macOS installer'
+            echo 'Download the artifact attached to this run for the Universal DMG, ZIP and SHA-256 checksums.'
+            echo 'Requires macOS 14 or later; supports Apple Silicon and Intel.'
+            if [[ "$SIGNING_READY" == true ]]; then
+              echo 'Developer ID signed and notarized by Apple.'
+            else
+              echo 'Development build: ad-hoc signed, not notarized. Gatekeeper may block installation.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/snapany-cert.p12"
+          security delete-keychain "$RUNNER_TEMP/snapany-signing.keychain-db" 2>/dev/null || true

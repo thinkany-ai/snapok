@@ -1,0 +1,49 @@
+# SwiftPM / Xcode build products and per-user state
+.build/
+.swiftpm/
+DerivedData/
+build/
+dist/
+*.xcuserstate
+xcuserdata/
+*.dSYM/
+*.xcarchive/
+
+# Generated icon resolutions (keep the current PNG, ICNS and generator)
+*.iconset/
+/Resources/AppIcon.icns
+/Resources/Logo-notes.txt
+/Resources/Brand/SnapAnyMascot*
+/Resources/Brand/SnapAnySimple*
+
+# Local tools / editors
+.claude/
+.codex/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.pem
+*.key
+*.keychain
+*.keychain-db
+*.mobileprovision
+*.provisionprofile
+
+# OS files, temporary files and local output
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes/
+*.log
+*.tmp
+/tmp/
+/output/
