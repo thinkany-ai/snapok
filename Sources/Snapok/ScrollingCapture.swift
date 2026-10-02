@@ -62,6 +62,7 @@ actor ScrollCaptureEngine {
     private var seen = 0
     private var counts: [String: Int] = [:]
     private var lastPreview = Date.distantPast
+    private var failures: [String] = []
 
     /// `sourceRect` is in points, relative to the display's top-left corner.
     init(displayID: CGDirectDisplayID, sourceRect: CGRect, scale: CGFloat) {
@@ -114,7 +115,10 @@ actor ScrollCaptureEngine {
         case .grew(let rows): grew = rows != 0; counts["grew", default: 0] += 1
         case .estimated(let rows): grew = rows != 0; counts["estimated", default: 0] += 1
         case .unchanged: grew = false; counts["unchanged", default: 0] += 1
-        case .lostTrack: grew = false; counts["lost", default: 0] += 1
+        case .lostTrack:
+            grew = false
+            counts["lost", default: 0] += 1
+            if failures.count < 8 { failures.append(stitcher.lastFailure ?? "frame size changed") }
         case .full: grew = false; counts["full", default: 0] += 1
         }
         // The panel shows a small preview; refreshing it a few times a second is plenty.
@@ -142,6 +146,7 @@ actor ScrollCaptureEngine {
     /// Frame size and step counts, for the log.
     func summary() -> String {
         "\(Int(pixelSize.width))x\(Int(pixelSize.height)) px, frames \(seen), steps \(counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")), height \(stitcher?.height ?? 0)"
+            + (failures.isEmpty ? "" : "; lost: " + failures.joined(separator: " | "))
     }
 }
 

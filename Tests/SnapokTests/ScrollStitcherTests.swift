@@ -157,6 +157,21 @@ struct ScrollStitcherTests {
         precondition(abs(fractional.height - (Int(position) + 200)) <= 2, "height \(fractional.height) for \(position)")
         precondition(fractional.add(blended(position + 0.3)) == .unchanged, "a sub-pixel wobble is not a scroll")
 
-        print("Passed scroll stitching checks: fixed bars, uneven steps, repeats, back-scroll, jumps, noise, blank stretches, size limit, sidebars, scroll bars, fractional scrolling")
+        // Something on screen that changes by itself while the page scrolls (an animation, a banner
+        // fading in): 16 of 240 rows never line up, the rest still decides.
+        let animated = (0..<900).map { pageRow($0 + 5000) }
+        func animatedFrame(_ scroll: Int, tick: Int) -> ScrollFrame {
+            ScrollFrame(width: width, height: 240, pixels: (0..<240).flatMap { row -> [UInt8] in
+                (100..<116).contains(row) ? pageRow(9000 + tick * 31 + row) : animated[scroll + row]
+            })
+        }
+        var animation = ScrollStitcher(first: animatedFrame(0, tick: 0))
+        for (tick, scroll) in [35, 80, 140, 210, 260, 330].enumerated() {
+            let result = animation.add(animatedFrame(scroll, tick: tick + 1))
+            if case .grew = result {} else { fatalError("animated step \(scroll): \(result) \(animation.lastFailure ?? "")") }
+        }
+        precondition(animation.height == 330 + 240)
+
+        print("Passed scroll stitching checks: fixed bars, uneven steps, repeats, back-scroll, jumps, noise, blank stretches, size limit, sidebars, scroll bars, fractional scrolling, animations")
     }
 }

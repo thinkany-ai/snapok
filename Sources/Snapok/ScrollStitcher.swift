@@ -124,6 +124,8 @@ struct ScrollStitcher {
     /// The body ends at this row of the last frame; the rows below it are added at the end.
     private var lastEnd: Int
     /// The largest fixed bars seen so far, used where a single step can't tell padding from blank page.
+    /// Why the last frame that didn't line up was rejected, for diagnostics.
+    private(set) var lastFailure: String?
     private var provenHeader = 0
     private var provenFooter = 0
 
@@ -191,7 +193,9 @@ struct ScrollStitcher {
             guard let expectedOffset, expectedOffset > 0, expectedOffset < band.count else { return .lostTrack }
             offset = expectedOffset
         case .still: return .unchanged
-        case .noMatch: return .lostTrack
+        case .noMatch(let reason):
+            lastFailure = reason
+            return .lostTrack
         }
         // A still blank row next to a bar is the bar's padding if what should have scrolled into its place
         // differs, or if an earlier step proved the bar reaches that far; otherwise it is blank page.
@@ -243,7 +247,7 @@ struct ScrollStitcher {
         return signatures[gapStart...gapEnd].allSatisfy(\.plain) && gapEnd - gapStart + 1 >= signatures.count / 2
     }
 
-    private enum Measurement { case found(Int), still, featureless, noMatch }
+    private enum Measurement { case found(Int), still, featureless, noMatch(String) }
 
     /// The scroll distance in rows: the shift under which the frames differ least, measured as the mean gray
     /// difference over the moving columns. Not exact equality: apps that scroll by fractions of a pixel
@@ -319,32 +323,41 @@ struct ScrollStitcher {
                 }
             }
         }
+        // Mean difference per column over the best-matching 85% of the rows: part of the frame
+        // may not follow the scroll (a sticky header appearing, an image fading in, an animation).
         func cost(_ offset: Int) -> Float {
+            var perRow: [Int] = []
             rows.withUnsafeBufferPointer { rows in
                 columns.withUnsafeBufferPointer { columns in
                     current.withUnsafeBufferPointer { a in
                         previous.withUnsafeBufferPointer { b in
-                            var total = 0, count = 0
                             for row in rows where row + offset < upper {
                                 let x = a.baseAddress! + row * bands, y = b.baseAddress! + (row + offset) * bands
+                                var total = 0
                                 for column in columns { total += abs(Int(x[column]) - Int(y[column])) }
-                                count += 1
+                                perRow.append(total)
                             }
-                            return count == 0 ? .infinity : Float(total) / Float(count * columns.count)
                         }
                     }
                 }
             }
+            guard !perRow.isEmpty else { return .infinity }
+            perRow.sort()
+            let kept = perRow.prefix(max(1, perRow.count * 85 / 100))
+            return Float(kept.reduce(0, +)) / Float(kept.count * columns.count)
         }
         let scored = medium.map { ($0.offset, cost($0.offset)) }.sorted { $0.1 < $1.1 }
-        guard let (best, bestCost) = scored.first else { return .noMatch }
+        guard let (best, bestCost) = scored.first else { return .noMatch("no shift leaves enough overlap") }
         let still = cost(0)
         // Redrawn in place (a fraction of a pixel, or not at all).
         if still < 1, still <= bestCost { return .still }
         // Not moving at all must fit worse, and so must any shift that isn't next to the winner
         // (repeating content, such as table rows, can line up at several distances).
         let runnerUp = scored.dropFirst().first { abs($0.0 - best) > 2 }?.1 ?? .infinity
-        guard bestCost < 1.5, bestCost < still * 0.6, bestCost < runnerUp * 0.75 else { return .noMatch }
+        guard bestCost < 2, bestCost < still * 0.6, bestCost < runnerUp * 0.75 else {
+            return .noMatch(String(format: "best %d (%.2f), still %.2f, other %.2f, rows %d/%d", best, bestCost, still, runnerUp,
+                                   distinctive.count, band.count))
+        }
         return .found(best)
     }
 
