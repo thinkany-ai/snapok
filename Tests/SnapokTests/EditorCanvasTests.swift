@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 extension Bundle { static var module: Bundle { .main } }
 
 @main @MainActor
@@ -62,6 +63,61 @@ struct EditorCanvasTests {
                 try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1] + suffix + ".png"))
             }
         }
-        print("Passed editor checks: Retina coordinates, drawing/undo, imported annotation movement/style/undo, annotated export, editor layout")
+        // Capture-window command routing must win over a menu shortcut using the same key.
+        if let screen = NSScreen.main {
+            let captureWindow = CaptureWindow(screen: screen, desktopImage: image, windowFrames: [])
+            let delegate = CaptureEditDelegate()
+            captureWindow.captureDelegate = delegate
+            let view = captureWindow.contentView as! CaptureView
+            func captureEvent(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: y), modifierFlags: [], timestamp: 0,
+                    windowNumber: captureWindow.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+            }
+            view.mouseDown(with: captureEvent(.leftMouseDown, 100, 100))
+            view.mouseDragged(with: captureEvent(.leftMouseDragged, 300, 250))
+            view.mouseUp(with: captureEvent(.leftMouseUp, 300, 250))
+            precondition(AppChannel.editImageHotKey(forRelease: true).menuModifiers == .command)
+            precondition(AppChannel.editImageHotKey(forRelease: false).menuModifiers == .option)
+            let edit = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: AppChannel.editImageHotKey.menuModifiers, timestamp: 0,
+                windowNumber: captureWindow.windowNumber, context: nil, characters: "e", charactersIgnoringModifiers: "e",
+                isARepeat: false, keyCode: UInt16(kVK_ANSI_E))!
+            precondition(captureWindow.performKeyEquivalent(with: edit))
+            guard case .editImage? = delegate.mode else { preconditionFailure("The channel edit shortcut must open the selected image in the editor") }
+            precondition(delegate.result?.globalRect.size == CGSize(width: 200, height: 150))
+            precondition(ToolbarAction.editImage.title?.contains(AppChannel.editImageHotKey.symbol) == true)
+        }
+        // Repeated language changes must replace the library page, not stack old pages.
+        let languageSuite = "SnapokLibraryRelocalization-" + UUID().uuidString
+        let languageDefaults = UserDefaults(suiteName: languageSuite)!
+        defer { languageDefaults.removePersistentDomain(forName: languageSuite) }
+        let savedLanguage = AppLanguage.current
+        defer { AppLanguage.switchTo(savedLanguage, in: languageDefaults) }
+        let main = MainWindowController()
+        let mainRoot = main.window!.contentView!
+        func libraryPages(in view: NSView) -> [LibraryPane] {
+            (view as? LibraryPane).map { [$0] } ?? view.subviews.flatMap { libraryPages(in: $0) }
+        }
+        for language in [AppLanguage.simplifiedChinese, .english, .simplifiedChinese, .english] {
+            let previous = libraryPages(in: mainRoot).first!
+            AppLanguage.switchTo(language, in: languageDefaults)
+            main.relocalize()
+            mainRoot.layoutSubtreeIfNeeded()
+            let pages = libraryPages(in: mainRoot)
+            precondition(pages.count == 1, "Language changes must leave exactly one library page")
+            precondition(previous.superview == nil, "The previous page must be detached from the reused container")
+            precondition(pages[0].titleLabel.stringValue == language.text("Library", "截图库"))
+        }
+        print("Passed editor checks: Retina coordinates, drawing/undo, imported annotation movement/style/undo, annotated export, editor layout, library language replacement")
+    }
+}
+
+@MainActor
+private final class CaptureEditDelegate: CaptureWindowDelegate {
+    var mode: CaptureFinishMode?
+    var result: CaptureResult?
+    func captureWindowDidCancel(_ window: CaptureWindow) { }
+    func captureWindow(_ window: CaptureWindow, didFinish result: CaptureResult, mode: CaptureFinishMode) {
+        self.mode = mode
+        self.result = result
     }
 }

@@ -11,4 +11,4 @@ for file in "$ROOT_DIR"/Sources/Snapok/*.swift; do
 done
 swiftc -swift-version 6 -target "$(uname -m)-apple-macos14.0" -parse-as-library \
   "${SOURCES[@]}" "$TEST_DIR/AppSource.swift" "$ROOT_DIR/Tests/SnapokTests/EditorCanvasTests.swift" -o "$TEST_DIR/editor-tests"
-"$TEST_DIR/editor-tests" "$@"
+SNAPOK_HISTORY_DIR="$TEST_DIR/history" "$TEST_DIR/editor-tests" "$@"

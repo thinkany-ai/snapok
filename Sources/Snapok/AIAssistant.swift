@@ -157,6 +157,15 @@ struct AIClient {
         request.httpMethod = "POST"
         request.timeoutInterval = 180
         request.setValue("application/json", forHTTPHeaderField: "content-type")
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+        request.setValue("Snapok/\(version) (\(AppChannel.isRelease ? "release" : "dev"))", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppLinks.website.absoluteString, forHTTPHeaderField: "HTTP-Referer")
+        request.setValue(AppChannel.displayName, forHTTPHeaderField: "X-App-Name")
+        request.setValue(AppLinks.website.absoluteString, forHTTPHeaderField: "X-App-Url")
+        request.setValue(AppChannel.displayName, forHTTPHeaderField: "X-OpenRouter-Title")
+        request.setValue(AppChannel.displayName, forHTTPHeaderField: "X-Title")
+        // Do not send x-autojev-agent: it selects a configured agent model catalog,
+        // rather than only identifying the caller, and rejects unregistered clients.
         let body: [String: Any]
         switch kind {
         case .anthropic:

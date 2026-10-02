@@ -17,7 +17,7 @@ let package = Package(
         .executableTarget(
             name: "Snapok",
             dependencies: [.product(name: "Sentry", package: "sentry-cocoa")],
-            resources: [.copy("Resources/Logo.png"), .copy("Resources/AppIcon.png")],
+            resources: [.copy("Resources/Logo.png"), .copy("Resources/AppIcon.png"), .copy("Resources/MenuBarTemplate.png")],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("Carbon")

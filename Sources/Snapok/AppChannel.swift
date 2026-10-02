@@ -22,6 +22,17 @@ enum AppChannel {
             : HotKey(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(shiftKey | optionKey), key: "A")
     }
 
+    static var editImageHotKey: HotKey { editImageHotKey(forRelease: isRelease) }
+
+    static func editImageHotKey(forRelease release: Bool) -> HotKey {
+        HotKey(keyCode: UInt32(kVK_ANSI_E), modifiers: UInt32(release ? cmdKey : optionKey), key: "E")
+    }
+
+    static func matchesEditImageShortcut(_ event: NSEvent) -> Bool {
+        event.keyCode == UInt16(editImageHotKey.keyCode)
+            && event.modifierFlags.intersection([.command, .option, .control, .shift]) == editImageHotKey.menuModifiers
+    }
+
     static var supportDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(dataFolderName, isDirectory: true)

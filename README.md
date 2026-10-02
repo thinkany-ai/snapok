@@ -11,7 +11,7 @@
 ![Swift 6](https://img.shields.io/badge/Swift-6-orange)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
-Snapok is a native screenshot utility built with Swift and AppKit. It lives in the Dock and the menu bar: the global hotkey works anywhere, and the main window is a library of your past screenshots.
+Snapok is a native screenshot utility built with Swift and AppKit. Its main window is a library of your past screenshots. Close that window to hide the Dock icon; Snapok stays in the menu bar, and the global hotkey keeps working.
 
 > Early development: builds from `dev` are previews, not stable releases. English is the default language; Simplified Chinese is available in Settings → General → Language (applies immediately).
 
@@ -61,7 +61,7 @@ Press **Control + Command + A** to capture (**Shift + Option + A** in Snapok Dev
 | Expand / shrink automatic selection | Scroll up / down |
 | Move / resize selection | Drag inside / drag edges or handles |
 | Nudge selection | Arrow keys; `Shift` for 10-point steps |
-| Edit image | `⌘B` after selecting a capture |
+| Edit image | `⌘E` (release) / `⌥E` (development), after selecting a capture |
 | Copy capture | `Enter`, `⌘C`, or double-click the selection |
 | Save PNG | `⌘S` |
 | Undo annotation edit | `⌘Z` |
@@ -83,7 +83,7 @@ Pinned images can be dragged, closed with a double-click or `Esc`, and copied or
 
 ![Snapok screenshot library with daily groups, searchable image cards, and Settings beside the version at the bottom of the sidebar](docs/library-preview.png)
 
-Click the Dock icon, or choose **Open Library** from the menu bar, to open the main window. Browse screenshots grouped by day, or use the search field to find a capture. The sidebar provides **Library** and **Take Screenshot**, with **Settings** beside the version at the bottom. Closing the window keeps Snapok running so the hotkey still works.
+Click the Dock icon, or choose **Show Main Window** from the menu bar, to open the main window. Browse screenshots grouped by day, or use the search field to find a capture. The sidebar provides **Library** and **Take Screenshot**, with **Settings** beside the version at the bottom. Close the main window with `⌘W` or the close button to hide the Dock icon while keeping Snapok and its global hotkey running. Choose **Show Main Window** from the menu bar to reopen it and restore the Dock icon.
 
 - With auto-save enabled, copying, saving, pinning, or editing a capture adds it to the library; cancelled captures are not saved.
 - Double-click a screenshot (or press `Enter`) to edit it; annotations are written back when the editor closes.

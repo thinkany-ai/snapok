@@ -46,6 +46,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         settings = nil
         // Swap old and new views in one frame, so the window never shows a half-built state.
         window?.disableScreenUpdatesUntilFlush()
+        // The content container is reused; removing it from the root does not
+        // remove its children. Detach the old page before installing its replacement.
+        library.removeFromSuperview()
         window?.contentView?.subviews.forEach { $0.removeFromSuperview() }
         library = LibraryPane()
         library.onCapture = onCapture
@@ -68,9 +71,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func bringToFront() {
         HistoryStore.shared.purgeExpired()
+        NSApp.setActivationPolicy(.regular)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        // Keep the menu bar and global shortcut available without a Dock icon.
+        NSApp.setActivationPolicy(.accessory)
     }
 
     private func showSettings(_ page: SettingsPage, animated: Bool = true) {
@@ -394,12 +403,19 @@ final class LibraryPane: PageView, NSCollectionViewDataSource, NSCollectionViewD
     let collection = LibraryCollectionView()
     private let search = NSSearchField()
     private let empty = NSTextField(wrappingLabelWithString: "")
+    private let screenPermissionNotice = NSStackView()
     private var sections: [(title: String, items: [HistoryItem])] = []
 
     init() {
         super.init(title: L("Library", "截图库"), subtitle: "")
         build()
         reload()
+        for name in [ScreenRecordingPermission.didChange, NSApplication.didBecomeActiveNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshScreenPermission() }
+            }
+        }
+        refreshScreenPermission()
         for name in [HistoryStore.didChange, HotKeyCenter.didChange] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.reload() }
@@ -444,7 +460,26 @@ final class LibraryPane: PageView, NSCollectionViewDataSource, NSCollectionViewD
         empty.font = .systemFont(ofSize: 14)
         empty.textColor = .secondaryLabelColor
 
-        [search, scroll, empty].forEach {
+        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Snapok"
+        let permissionText = NSTextField(wrappingLabelWithString: L(
+            "Screen Recording access is required. Enable \(appName) in System Settings, then restart the app if capture is still unavailable.",
+            "需要屏幕录制权限。请在系统设置中开启 \(appName)；授权后若仍无法截图，请重启应用。"))
+        permissionText.textColor = .secondaryLabelColor
+        permissionText.font = .systemFont(ofSize: 13)
+        let settingsButton = NSButton(title: L("Open System Settings", "打开系统设置"), target: self, action: #selector(openScreenPermissionSettings))
+        let restartButton = NSButton(title: L("Restart App", "重启应用"), target: self, action: #selector(restartForScreenPermission))
+        settingsButton.bezelStyle = .rounded
+        restartButton.bezelStyle = .rounded
+        screenPermissionNotice.setViews([permissionText, settingsButton, restartButton], in: .center)
+        screenPermissionNotice.spacing = 12
+        screenPermissionNotice.edgeInsets = NSEdgeInsets(top: 8, left: 40, bottom: 8, right: 40)
+        let body = NSStackView(views: [screenPermissionNotice, scroll])
+        body.orientation = .vertical
+        body.spacing = 8
+        body.alignment = .leading
+        screenPermissionNotice.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+        scroll.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+        [search, body, empty].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
@@ -452,14 +487,26 @@ final class LibraryPane: PageView, NSCollectionViewDataSource, NSCollectionViewD
             search.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             search.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -40),
             search.widthAnchor.constraint(equalToConstant: 280),
-            scroll.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 18),
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            body.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 18),
+            body.leadingAnchor.constraint(equalTo: leadingAnchor),
+            body.trailingAnchor.constraint(equalTo: trailingAnchor),
+            body.bottomAnchor.constraint(equalTo: bottomAnchor),
             empty.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
             empty.centerYAnchor.constraint(equalTo: scroll.centerYAnchor, constant: -30),
             empty.widthAnchor.constraint(lessThanOrEqualToConstant: 420)
         ])
+    }
+
+    private func refreshScreenPermission() {
+        screenPermissionNotice.isHidden = CGPreflightScreenCaptureAccess()
+    }
+
+    @objc private func openScreenPermissionSettings() {
+        ScreenRecordingPermission.openSettings()
+    }
+
+    @objc private func restartForScreenPermission() {
+        AppRelauncher.relaunch()
     }
 
     // MARK: Data

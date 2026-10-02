@@ -16,6 +16,18 @@ import http.server, json, pathlib, sys
 class Handler(http.server.BaseHTTPRequestHandler):
     calls = 0
     def do_POST(self):
+        attribution = (
+            self.headers.get('User-Agent', '').startswith('Snapok/'),
+            self.headers.get('HTTP-Referer') == 'https://snapok.app',
+            self.headers.get('X-App-Name') == 'Snapok Dev',
+            self.headers.get('X-App-Url') == 'https://snapok.app',
+            self.headers.get('X-App-Title') is None,
+            self.headers.get('X-OpenRouter-Title') == 'Snapok Dev',
+            self.headers.get('X-Title') == 'Snapok Dev',
+            self.headers.get('x-autojev-agent') is None,
+        )
+        if not all(attribution):
+            self.send_response(400); self.end_headers(); self.wfile.write(b'Invalid application attribution'); return
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         content = body['messages'][-1]['content']
         images = [item for item in content if item['type'] == 'image_url']

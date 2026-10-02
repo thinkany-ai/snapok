@@ -104,6 +104,9 @@ final class GeneralSettingsPane: PageView {
     private let retention = NSPopUpButton()
     private let language = NSPopUpButton()
     private let theme = NSPopUpButton()
+    private let screenCaptureStatus = NSTextField(labelWithString: "")
+    private let enableScreenCapture = NSButton(title: L("Authorize…", "授权…"), target: nil, action: nil)
+    private let screenCaptureSettings = NSButton(title: L("System Settings…", "系统设置…"), target: nil, action: nil)
     private let snappingStatus = NSTextField(labelWithString: "")
     private let enableSnapping = NSButton(title: L("Enable…", "开启…"), target: nil, action: nil)
     private let retentionOptions: [(title: String, days: Int)] = [(L("7 days", "7 天"), 7), (L("30 days", "30 天"), 30), (L("90 days", "90 天"), 90), (L("Forever", "永久"), 0)]
@@ -127,6 +130,25 @@ final class GeneralSettingsPane: PageView {
         openFolder.bezelStyle = .rounded
         let clear = NSButton(title: L("Clear Library…", "清空截图库…"), target: self, action: #selector(clearHistory))
         clear.bezelStyle = .rounded
+        enableScreenCapture.bezelStyle = .rounded
+        enableScreenCapture.target = self
+        enableScreenCapture.action = #selector(requestScreenCapture)
+        screenCaptureSettings.bezelStyle = .rounded
+        screenCaptureSettings.target = self
+        screenCaptureSettings.action = #selector(openScreenCaptureSettings)
+        let screenCaptureRow = NSStackView(views: [screenCaptureStatus, enableScreenCapture, screenCaptureSettings])
+        screenCaptureRow.spacing = 10
+        let screenCaptureHint = NSTextField(wrappingLabelWithString: L(
+            "Requires macOS Screen Recording access. If denied, enable this app in System Settings and restart it.",
+            "需要 macOS 屏幕录制权限；已拒绝时请到系统设置开启当前应用，然后重启。"))
+        screenCaptureHint.font = .systemFont(ofSize: 12)
+        screenCaptureHint.textColor = .secondaryLabelColor
+        screenCaptureHint.preferredMaxLayoutWidth = 360
+        screenCaptureHint.widthAnchor.constraint(lessThanOrEqualToConstant: 360).isActive = true
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshScreenCaptureStatus),
+                                               name: NSApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshScreenCaptureStatus),
+                                               name: ScreenRecordingPermission.didChange, object: nil)
         enableSnapping.bezelStyle = .rounded
         enableSnapping.target = self
         enableSnapping.action = #selector(requestComponentSnapping)
@@ -138,6 +160,8 @@ final class GeneralSettingsPane: PageView {
             [Self.label(L("Language", "语言")), language],
             [Self.label(L("Theme", "主题")), theme],
             [Self.label(L("Screenshot shortcut", "截图快捷键")), ShortcutRecorder()],
+            [Self.label(L("Screenshot access", "截图权限")), screenCaptureRow],
+            [NSGridCell.emptyContentView, screenCaptureHint],
             [Self.label(L("Component snapping", "组件自动吸附")), snappingRow],
             [NSGridCell.emptyContentView, Self.label(L("Accessibility access locates Dock icons and controls.", "需要辅助功能权限，用于定位 Dock 图标及控件。"), secondary: true)],
             [NSGridCell.emptyContentView, autoSave],
@@ -152,10 +176,31 @@ final class GeneralSettingsPane: PageView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func load() {
+        refreshScreenCaptureStatus()
         refreshSnappingStatus()
         theme.selectItem(at: AppAppearance.allCases.firstIndex(of: AppAppearance.saved()) ?? 0)
         autoSave.state = AppSettings.autoSave ? .on : .off
         retention.selectItem(at: retentionOptions.firstIndex { $0.days == AppSettings.retentionDays } ?? 1)
+    }
+
+    @objc private func refreshScreenCaptureStatus() {
+        let enabled = CGPreflightScreenCaptureAccess()
+        screenCaptureStatus.stringValue = enabled ? L("Allowed", "已允许") : L("Not allowed", "未允许")
+        screenCaptureStatus.textColor = enabled ? .systemGreen : .secondaryLabelColor
+        enableScreenCapture.isHidden = enabled
+    }
+
+    @objc private func requestScreenCapture() {
+        enableScreenCapture.isEnabled = false
+        Task { [weak self] in
+            _ = await ScreenRecordingPermission.request()
+            self?.enableScreenCapture.isEnabled = true
+            self?.refreshScreenCaptureStatus()
+        }
+    }
+
+    @objc private func openScreenCaptureSettings() {
+        ScreenRecordingPermission.openSettings()
     }
 
     @objc private func refreshSnappingStatus() {

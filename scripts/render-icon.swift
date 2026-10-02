@@ -1,5 +1,6 @@
 // Renders the Snapok app icon: swift scripts/render-icon.swift Resources/Brand/SnapokFamily.png
 // Development icon: swift scripts/render-icon.swift --dev Resources/Brand/SnapokFamily-Dev.png
+// Menu bar template: swift scripts/render-icon.swift --menubar Sources/Snapok/Resources/MenuBarTemplate.png
 // Family style shared with TypeAny / MailAny: gradient tile on the 824pt macOS grid,
 // soft white shapes, vertical pill eyes. Snapok's character is the selection itself:
 // a nearly closed rounded frame, open at the top-right and bottom-left corners, with the eyes inside.
@@ -8,7 +9,8 @@ import AppKit
 // Pass --dev to add the "DEV" badge used by development builds.
 let arguments = CommandLine.arguments.dropFirst()
 let isDev = arguments.contains("--dev")
-let out = arguments.first { $0 != "--dev" } ?? "icon.png"
+let isMenuBar = arguments.contains("--menubar")
+let out = arguments.first { !$0.hasPrefix("--") } ?? "icon.png"
 
 func rgb(_ hex: UInt32, _ a: CGFloat = 1) -> CGColor {
     CGColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255, blue: CGFloat(hex & 0xFF) / 255, alpha: a)
@@ -36,8 +38,9 @@ func superellipse(_ rect: CGRect, n: CGFloat = 4) -> CGPath {
     return path
 }
 
+let canvasSize = isMenuBar ? 44 : 1024
 let ctx = CGContext(
-    data: nil, width: 1024, height: 1024, bitsPerComponent: 8, bytesPerRow: 0,
+    data: nil, width: canvasSize, height: canvasSize, bitsPerComponent: 8, bytesPerRow: 0,
     space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
 )!
 
@@ -53,6 +56,12 @@ func gradient(_ path: CGPath, _ top: CGColor, _ bottom: CGColor, box: CGRect? = 
 
 /// Soft white shape with a drop shadow and a faint blush toward the bottom.
 func softWhite(_ path: CGPath, shadowOffset: CGFloat = 16, blur: CGFloat = 36, box: CGRect? = nil) {
+    if isMenuBar {
+        ctx.addPath(path)
+        ctx.setFillColor(rgb(0xFFFFFF))
+        ctx.fillPath()
+        return
+    }
     ctx.saveGState()
     ctx.setShadow(offset: CGSize(width: 0, height: -shadowOffset), blur: blur, color: shapeShadow)
     ctx.addPath(path)
@@ -63,6 +72,7 @@ func softWhite(_ path: CGPath, shadowOffset: CGFloat = 16, blur: CGFloat = 36, b
 }
 
 // Tile.
+if !isMenuBar {
 let tile = superellipse(CGRect(x: 100, y: 100, width: 824, height: 824))
 ctx.saveGState()
 ctx.setShadow(offset: CGSize(width: 0, height: -10), blur: 24, color: rgb(0x000000, 0.25))
@@ -71,6 +81,12 @@ ctx.setFillColor(tileBottom)
 ctx.fillPath()
 ctx.restoreGState()
 gradient(tile, tileTop, tileBottom)
+} else {
+    // Keep the same frame and eyes, with an 18pt mark inside a 22pt template at 2x.
+    ctx.translateBy(x: 22, y: 22)
+    ctx.scaleBy(x: 36 / 520, y: 36 / 520)
+    ctx.translateBy(x: -512, y: -512)
+}
 
 // Frame: sample the rounded-square centerline clockwise, starting at the left end of the top edge,
 // then stroke every run between the gaps with round caps.
@@ -151,7 +167,7 @@ for dx: CGFloat in [-78, 78] {
 }
 
 // Development badge: a dark pill under the frame, readable down to Dock size.
-if isDev {
+if isDev && !isMenuBar {
     let badge = CGRect(x: 512 - 150, y: 128, width: 300, height: 104)
     ctx.saveGState()
     ctx.setShadow(offset: CGSize(width: 0, height: -6), blur: 14, color: rgb(0x000000, 0.3))

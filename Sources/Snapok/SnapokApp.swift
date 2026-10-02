@@ -11,6 +11,9 @@ enum Brand {
     static var logo: NSImage? {
         (Bundle.main.url(forResource: "Logo", withExtension: "png") ?? Bundle.module.url(forResource: "Logo", withExtension: "png")).flatMap { NSImage(contentsOf: $0) }
     }
+    static var menuBarIcon: NSImage? {
+        (Bundle.main.url(forResource: "MenuBarTemplate", withExtension: "png") ?? Bundle.module.url(forResource: "MenuBarTemplate", withExtension: "png")).flatMap { NSImage(contentsOf: $0) }
+    }
 }
 
 private let logURL = AppChannel.logURL
@@ -175,8 +178,10 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
     private func configureMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = AppChannel.displayName
-        if let logo = Brand.logo {
-            logo.size = NSSize(width: 22, height: 22)
+        if let logo = Brand.menuBarIcon {
+            logo.size = NSSize(width: 20, height: 20)
+            // Let macOS tint the logo for the menu bar background and selection state.
+            logo.isTemplate = true
             statusItem.button?.image = logo
             statusItem.button?.title = ""
         }
@@ -209,7 +214,9 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         let screenshotItem = NSMenuItem(title: L("Take Screenshot", "开始截图"), action: #selector(startScreenshot), keyEquivalent: "")
         menu.addItem(screenshotItem)
         captureMenuItems.append(screenshotItem)
-        menu.addItem(NSMenuItem(title: L("Open Library", "打开截图库"), action: #selector(showLibrary), keyEquivalent: ""))
+        let showMainWindow = NSMenuItem(title: L("Show Main Window", "显示主窗口"), action: #selector(showLibrary), keyEquivalent: "")
+        showMainWindow.target = self
+        menu.addItem(showMainWindow)
         menu.addItem(NSMenuItem(title: L("Settings…", "设置…"), action: #selector(showPreferences), keyEquivalent: ","))
         let update = NSMenuItem(title: "", action: #selector(checkForUpdates), keyEquivalent: "")
         menu.addItem(update)
@@ -249,7 +256,15 @@ final class ScreenshotController {
     private var preparingCapture = false
 
     func start() {
-        guard windows.isEmpty, !preparingCapture else { return }
+        if !windows.isEmpty {
+            // Carbon consumes the keystroke when capture and editing share a shortcut.
+            let shortcut = HotKeyCenter.shared.current
+            if shortcut == AppChannel.editImageHotKey {
+                (NSApp.keyWindow as? CaptureWindow)?.editImage()
+            }
+            return
+        }
+        guard !preparingCapture else { return }
         preparingCapture = true
         Task { [weak self] in
             guard let self else { return }
@@ -520,6 +535,16 @@ final class CaptureWindow: NSWindow {
         isReleasedWhenClosed = false
     }
 
+    func editImage() { (contentView as? CaptureView)?.editImage() }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if AppChannel.matchesEditImageShortcut(event) {
+            editImage()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override var canBecomeKey: Bool { true }
 }
 
@@ -645,7 +670,7 @@ final class PreferencesView: NSView {
             L("Drag inside to move; drag an edge or handle to resize", "拖动选区内部移动，拖动边框或控制点调整大小"),
             L("Double-click the selection or press Enter to finish and copy", "双击选区或按 Enter：完成并复制到剪贴板"),
             L("Esc: cancel capture; right-click: select a new region", "Esc：退出截图；右键：重新选择区域"),
-            L("⌘Z: undo; ⌘S: save; Delete: remove the selected annotation", "⌘Z 撤销，⌘S 保存，Delete 删除选中的标注"),
+            L("\(AppChannel.editImageHotKey.symbol): edit image; ⌘Z: undo; ⌘S: save; Delete: remove the selected annotation", "\(AppChannel.editImageHotKey.symbol) 编辑图片，⌘Z 撤销，⌘S 保存，Delete 删除选中的标注"),
             L("Arrow keys: adjust selection (hold Shift for 10-point steps)", "方向键微调选区（按住 Shift 每次 10 点）"),
             L("Pinned images: double-click or Esc to close; right-click to copy or save", "钉图：双击或 Esc 关闭，右键可复制/保存")
         ]
@@ -1489,8 +1514,8 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             finish(.copy)
         case kVK_ANSI_C where command:
             finish(.copy)
-        case kVK_ANSI_B where command:
-            finish(.editImage)
+        case kVK_ANSI_E where AppChannel.matchesEditImageShortcut(event):
+            editImage()
         case kVK_ANSI_S where command:
             finish(.save)
         case kVK_ANSI_Z where command:
@@ -1695,6 +1720,8 @@ final class CaptureView: NSView, NSTextFieldDelegate {
 
     // MARK: Finish
 
+    func editImage() { finish(.editImage) }
+
     private func finish(_ mode: CaptureFinishMode) {
         commitActiveTextField()
         guard let selection, selection.width >= 2, selection.height >= 2, let windowRef else { return }
@@ -1816,7 +1843,7 @@ enum ToolbarAction: Equatable {
     var title: String? {
         switch self {
         case .tool(let tool): return tool.title
-        case .editImage: return L("Edit Image (⌘B)", "编辑图片（⌘B）")
+        case .editImage: return L("Edit Image (\(AppChannel.editImageHotKey.symbol))", "编辑图片（\(AppChannel.editImageHotKey.symbol)）")
         case .undo: return L("Undo", "撤销")
         case .pin: return L("Pin to Screen", "钉在屏幕上")
         case .save: return L("Save", "保存")
@@ -2317,6 +2344,13 @@ enum ComponentSnappingPermission {
 /// A false return can mean its authorization window is still awaiting a response.
 @MainActor
 enum ScreenRecordingPermission {
+    static let didChange = Notification.Name("SnapokScreenRecordingPermissionDidChange")
+
+    static func openSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     static func request() async -> Bool {
         if CGPreflightScreenCaptureAccess() { return true }
         NSApp.activate(ignoringOtherApps: true)
@@ -2326,6 +2360,7 @@ enum ScreenRecordingPermission {
         log("screen recording permission request: granted=\(granted), bundle=\(Bundle.main.bundleIdentifier ?? "unknown")")
         // Do not issue a second request or reactivate the app here: the native
         // authorization window may still be waiting for the user's decision.
+        NotificationCenter.default.post(name: didChange, object: nil)
         return granted
     }
 }
