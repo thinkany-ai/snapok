@@ -15,6 +15,11 @@ enum Brand {
 
 private let logURL = AppChannel.logURL
 
+/// Keep diagnostics independent of the system and interface language.
+func log(_ message: String, error: Error) {
+    log("\(message): \(logErrorDetails(error))")
+}
+
 func log(_ message: String) {
     NSLog("Snapok: %@", message)
     let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
@@ -46,6 +51,7 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppAppearance.saved().apply()
         NSApp.setActivationPolicy(.regular)
         NSApp.applicationIconImage = Brand.appIcon
         screenshotController = ScreenshotController()
@@ -66,9 +72,6 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         }
         let hasScreenAccess = CGPreflightScreenCaptureAccess()
         log("screen capture access=\(hasScreenAccess), accessibility=\(AXIsProcessTrusted())")
-        if !hasScreenAccess {
-            CGRequestScreenCaptureAccess()
-        }
         showLibrary()
         Updater.shared.start()
         Telemetry.start()
@@ -87,22 +90,21 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
     }
 
     @objc func showLibrary() {
-        presentMainWindow(.library)
+        mainWindowController().present()
     }
 
     @objc private func showAbout() {
-        presentMainWindow(.about)
+        mainWindowController().presentSettings(.about)
     }
 
-    private func presentMainWindow(_ page: MainPage) {
-        if mainWindow == nil {
-            let controller = MainWindowController()
-            controller.onCapture = { [weak self] in self?.startScreenshot() }
-            controller.onOpen = { [weak self] item in self?.screenshotController.openEditor(for: item) }
-            controller.onPin = { [weak self] image in self?.screenshotController.pinCentered(image, on: nil) }
-            mainWindow = controller
-        }
-        mainWindow?.present(page)
+    private func mainWindowController() -> MainWindowController {
+        if let mainWindow { return mainWindow }
+        let controller = MainWindowController()
+        controller.onCapture = { [weak self] in self?.startScreenshot() }
+        controller.onOpen = { [weak self] item in self?.screenshotController.openEditor(for: item) }
+        controller.onPin = { [weak self] image in self?.screenshotController.pinCentered(image, on: nil) }
+        mainWindow = controller
+        return controller
     }
 
     /// Open editors and pinned images keep their language until they are reopened.
@@ -208,7 +210,6 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         menu.addItem(screenshotItem)
         captureMenuItems.append(screenshotItem)
         menu.addItem(NSMenuItem(title: L("Open Library", "打开截图库"), action: #selector(showLibrary), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: L("Enable Component Snapping…", "启用组件自动吸附…"), action: #selector(enableComponentFocus), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L("Settings…", "设置…"), action: #selector(showPreferences), keyEquivalent: ","))
         let update = NSMenuItem(title: "", action: #selector(checkForUpdates), keyEquivalent: "")
         menu.addItem(update)
@@ -216,14 +217,6 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: L("Quit ", "退出 ") + AppChannel.displayName, action: #selector(quit), keyEquivalent: "q"))
         return menu
-    }
-
-    @objc private func enableComponentFocus() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        if !AXIsProcessTrustedWithOptions(options),
-           let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
-        }
     }
 
     private func updateCaptureShortcut() {
@@ -243,7 +236,7 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
     }
 
     @objc func showPreferences() {
-        presentMainWindow(.general)
+        mainWindowController().presentSettings(.general)
     }
 }
 
@@ -257,36 +250,26 @@ final class ScreenshotController {
 
     func start() {
         guard windows.isEmpty, !preparingCapture else { return }
-        // Without Screen Recording access macOS still returns an image, but only the wallpaper,
-        // menu bar, Dock and our own windows, so stop and explain instead of saving a broken capture.
-        guard CGPreflightScreenCaptureAccess() else {
-            log("capture blocked: no screen recording access")
-            promptForScreenRecording()
-            return
-        }
         preparingCapture = true
         Task { [weak self] in
-            let frames = await WindowDetector.visibleWindowFrames()
             guard let self else { return }
+            // The system request may return before its authorization window closes.
+            // Leave that window in control instead of covering it with an app alert.
+            if !CGPreflightScreenCaptureAccess() {
+                let granted = await ScreenRecordingPermission.request()
+                guard granted else {
+                    self.preparingCapture = false
+                    log("capture blocked: no screen recording access")
+                    return
+                }
+            }
+            if ComponentSnappingPermission.offerIfNeeded() {
+                self.preparingCapture = false
+                return
+            }
+            let frames = await WindowDetector.visibleWindowFrames()
             self.preparingCapture = false
             self.beginCapture(windowFrames: frames)
-        }
-    }
-
-    private func promptForScreenRecording() {
-        CGRequestScreenCaptureAccess()
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = L("Screen Recording permission needed", "需要屏幕录制权限")
-        alert.informativeText = L(
-            "Without it, macOS only lets \(AppChannel.displayName) capture the wallpaper, menu bar, and Dock. Turn on \(AppChannel.displayName) in System Settings → Privacy & Security → Screen & System Audio Recording, then reopen \(AppChannel.displayName).",
-            "没有这个权限时，macOS 只允许 \(AppChannel.displayName) 截到壁纸、菜单栏和 Dock。请在 系统设置 → 隐私与安全性 → 屏幕与系统录音 中打开 \(AppChannel.displayName)，然后重新打开 \(AppChannel.displayName)。"
-        )
-        alert.addButton(withTitle: L("Open System Settings", "打开系统设置"))
-        alert.addButton(withTitle: L("Later", "稍后"))
-        if alert.runModal() == .alertFirstButtonReturn,
-           let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-            NSWorkspace.shared.open(url)
         }
     }
 
@@ -850,7 +833,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         if selection == nil {
             text += AXIsProcessTrusted()
                 ? L("  · Scroll to switch regions · ⌥ Whole window", "  · 滚轮切换区域 · ⌥ 整窗")
-                : L("  · Window snapping · Enable component snapping in the menu", "  · 整窗吸附 · 菜单中启用组件吸附")
+                : L("  · Window snapping · Enable component snapping in Settings → General", "  · 整窗吸附 · 设置 → 通用中启用组件吸附")
         }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
@@ -2081,7 +2064,7 @@ enum ImageExport {
             try data.write(to: url)
             return .saved
         } catch {
-            log("save failed: \(error)")
+            log("save failed", error: error)
             NSSound.beep()
             return .failed
         }
@@ -2294,5 +2277,72 @@ enum SymbolMetrics {
         )
         cache[key] = ink
         return ink
+    }
+}
+
+/// Accessibility enables hit testing for individual Dock icons and app controls.
+@MainActor
+enum ComponentSnappingPermission {
+    private static let explainedKey = "permissions.componentSnapping.explained"
+
+    /// Return true when handing off to system permission UI; do not capture over it.
+    static func offerIfNeeded() -> Bool {
+        guard !AXIsProcessTrusted(), !UserDefaults.standard.bool(forKey: explainedKey) else { return false }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = L("Enable precise component snapping?", "开启组件精确吸附？")
+        alert.informativeText = L(
+            "Accessibility access lets Snapok locate individual Dock icons, buttons, and other controls. Enable this app in the system permission window, then start a new screenshot. You can also continue with window snapping and manual selection, and enable component snapping later in Settings → General.",
+            "辅助功能权限让 Snapok 能定位 Dock 中的单个图标、按钮等控件。请在接下来的系统授权窗口中开启当前应用，然后重新发起截图。也可以继续使用整窗吸附和手动框选，稍后在设置 → 通用中启用组件自动吸附。"
+        )
+        alert.addButton(withTitle: L("Enable Component Snapping", "启用组件吸附"))
+        alert.addButton(withTitle: L("Continue Screenshot", "继续截图"))
+        let response = alert.runModal()
+        UserDefaults.standard.set(true, forKey: explainedKey)
+        guard response == .alertFirstButtonReturn else { return false }
+        request()
+        return true
+    }
+
+    static func request() {
+        guard !AXIsProcessTrusted() else { return }
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let trusted = AXIsProcessTrustedWithOptions(options)
+        log("accessibility permission request: trusted=\(trusted)")
+        // Prompting is asynchronous. Let the system window open Settings itself.
+    }
+}
+
+/// Let macOS own permission UI, including registering the app and opening Settings.
+/// A false return can mean its authorization window is still awaiting a response.
+@MainActor
+enum ScreenRecordingPermission {
+    static func request() async -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+        NSApp.activate(ignoringOtherApps: true)
+        // Let activation reach the window server before asking for consent.
+        await Task.yield()
+        let granted = CGRequestScreenCaptureAccess()
+        log("screen recording permission request: granted=\(granted), bundle=\(Bundle.main.bundleIdentifier ?? "unknown")")
+        // Do not issue a second request or reactivate the app here: the native
+        // authorization window may still be waiting for the user's decision.
+        return granted
+    }
+}
+
+/// Reopens the app after it quits, for permissions that apply only to a new process.
+@MainActor
+enum AppRelauncher {
+    static func relaunch() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", "while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.1; done; /usr/bin/open \"$0\"",
+                          Bundle.main.bundleURL.path]
+        do {
+            try task.run()
+            NSApp.terminate(nil)
+        } catch {
+            log("relaunch failed", error: error)
+        }
     }
 }

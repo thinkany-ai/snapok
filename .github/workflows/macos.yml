@@ -44,6 +44,10 @@ jobs:
           ./scripts/test-history.sh
           ./scripts/test-hotkey.sh
           ./scripts/test-models.sh
+          ./scripts/test-log-error.sh
+          ./scripts/test-markdown.sh
+          ./scripts/test-image-translation.sh
+          ./scripts/test-image-translation-integration.sh
           ./scripts/test-updates.sh
 
       - name: Check signing configuration

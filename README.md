@@ -20,10 +20,11 @@ Snapok is a native screenshot utility built with Swift and AppKit. It lives in t
 - **Capture any region:** drag a selection, click a window, or hover over accessible UI components to select them. Detect the Dock, menu bar, and status items as well. Scroll through parent regions; hold Option to select the whole window or system UI container.
 - **Annotate:** rectangle, ellipse, arrow, pen, text, and mosaic, with adjustable sizes and colors. Move, restyle, delete, and undo annotations.
 - **Edit images:** keep annotations editable after capture, add desktop wallpaper, gradients, a solid color, or a custom background image.
-- **Frame screenshots:** adjust horizontal and vertical padding, corner radius, and shadow with a live preview.
+- **Frame screenshots:** adjust horizontal and vertical padding, border width and color, corner radius, and shadow with a live preview.
 - **Export:** copy to the clipboard, save PNG, or pin an image above other windows. Export at the original pixel resolution.
 - **Inspect pixels:** view cursor coordinates and RGB values in the capture magnifier.
-- **Screenshot library:** every finished capture is saved with its annotations, grouped by day and searchable by title, tag, or the text inside the image. Open any screenshot to keep editing it.
+- **Screenshot library:** automatically save finished captures with their annotations, browse them by day, and search by title, tag, or text inside the image. Double-click any screenshot to keep editing it; configure auto-save and retention in Settings.
+- **Make it yours:** switch between Light, Dark, and System themes, choose English or Simplified Chinese, and customize the capture shortcut in General settings.
 - **AI tools:** recognize text and mask phone numbers, emails, ID numbers, and keys on-device; translate a screenshot or ask a question about it with the model of your choice (Anthropic or any OpenAI-compatible provider, with your own key); optionally name and tag new screenshots automatically.
 
 ## Install a development build
@@ -47,7 +48,7 @@ Open **System Settings → Privacy & Security**:
 | Screen Recording / Screen & System Audio Recording | Capture the screen. Required for screenshots. |
 | Accessibility | Detect individual controls and panels in other apps. Also used to locate the visible Dock on newer macOS versions. Optional; ordinary window selection and manual capture still work without it. |
 
-Choose **Enable Component Snapping…** from the menu bar to open Accessibility settings. Some apps expose only their containing window or panel; custom-drawn content cannot always be detected as separate components. Dynamic desktop wallpapers may require importing a local background image instead.
+Open **Settings → General → Component Snapping** and choose **Enable…** to request Accessibility access. Some apps expose only their containing window or panel; custom-drawn content cannot always be detected as separate components. Dynamic desktop wallpapers may require importing a local background image instead.
 
 ## Usage
 
@@ -68,32 +69,57 @@ Press **Control + Command + A** to capture (**Shift + Option + A** in Snapok Dev
 | Reselect / cancel capture | Right-click / `Esc` |
 | Close image editor | `⌘W` |
 
-In the image editor, use the lower toolbar to annotate and the sidebar to adjust backgrounds, padding (0–600 px per axis), radius (0–80 px), and shadow. The pointer tool selects and moves annotations; double-click text to edit it. Copying and saving keep the editor open. The **AI Tools** menu in the editor header recognizes text, masks sensitive information (undoable), translates, and answers questions about the screenshot.
+### Image editor
+
+![Snapok image editor with a gradient background, annotation toolbar, and controls for padding, border, corner radius, and shadow](docs/background-editor-preview.png)
+
+Use the lower toolbar to annotate and the sidebar to frame your screenshot. Choose a gradient, desktop wallpaper, solid color, or custom background image; adjust padding (0–600 px per axis), border width (0–20 px) and color, corner radius (0–80 px), and shadow with a live preview. The pointer tool selects and moves annotations; double-click text to edit it.
+
+Use **Copy Image** or **Save PNG** to export at the original pixel resolution while keeping the editor open. The **AI Tools** menu in the editor header recognizes text, masks sensitive information (undoable), translates, and answers questions about the screenshot.
 
 Pinned images can be dragged, closed with a double-click or `Esc`, and copied or saved from their context menu.
 
 ### Screenshot library
 
-Click the Dock icon, or choose **Open Library** from the menu bar, to open the main window. Its sidebar switches between **Library**, **General**, **Models**, and **About**, and has a **Take Screenshot** button. Closing the window keeps Snapok running so the hotkey still works.
+![Snapok screenshot library with daily groups, searchable image cards, and Settings beside the version at the bottom of the sidebar](docs/library-preview.png)
 
-- Copying, saving, pinning, or editing a capture adds it to the library; cancelled captures are not saved.
+Click the Dock icon, or choose **Open Library** from the menu bar, to open the main window. Browse screenshots grouped by day, or use the search field to find a capture. The sidebar provides **Library** and **Take Screenshot**, with **Settings** beside the version at the bottom. Closing the window keeps Snapok running so the hotkey still works.
+
+- With auto-save enabled, copying, saving, pinning, or editing a capture adds it to the library; cancelled captures are not saved.
 - Double-click a screenshot (or press `Enter`) to edit it; annotations are written back when the editor closes.
 - Right-click for copy, pin, copy recognized text, rename, reveal in Finder, and delete (`Delete` also works).
 - Search covers titles, tags, and text recognized on-device after each capture.
 - Files live in `~/Library/Application Support/Snapok/History` (`Snapok Dev/History` for development builds), one folder per screenshot (`original.png`, `thumbnail.png`, `meta.json`). Screenshots older than the retention period (default 30 days) are deleted automatically.
 
-### Settings and AI
+### Settings
 
-Open **Settings…** (`⌘,`) or pick a settings page in the sidebar. **General** controls auto-save, retention (7/30/90 days or forever), and clearing the library. **Models** lists model providers: add any number, each with an API format (Anthropic Messages or OpenAI-compatible), base URL, API key (stored only in the Keychain), and model IDs; presets cover Anthropic, OpenAI, OpenRouter, DeepSeek, MiniMax, and Z.AI. Pick the default model that translation, questions, and auto naming use, test a provider's connection, and set the translation language. A key from earlier builds becomes an Anthropic provider automatically. **About** shows the version, project links, and the library and log locations.
+![Snapok General settings showing language, theme, capture shortcut, component snapping status, auto-save, and screenshot retention](docs/general-settings-preview.png)
+
+Open **Settings…** (`⌘,`) or click **Settings** beside the version at the bottom of the library sidebar. Settings opens as a panel over the library; close it with ✕, `Esc`, or a click outside.
+
+- **General:** choose the interface language and theme (**System**, **Light**, or **Dark**), customize the capture shortcut, and check component snapping access. Themes apply immediately and are remembered; System follows the macOS appearance. Control auto-save, choose retention (7/30/90 days or forever), open the library folder in Finder, or clear saved screenshots.
+- **Profile:** click the avatar card to set a local avatar and nickname.
+- **Models:** configure providers and select the default model for translation, questions, and automatic naming.
+- **AI Features:** turn automatic naming on or off. Choose the target language when translating an image.
+- **About:** view the version, updates, project links, and library and log locations.
+
+### AI tools
+
+In **Settings → Models**, add providers with an API format (Anthropic Messages or OpenAI-compatible), base URL, API key (stored only in the Keychain), and model IDs. Presets cover Anthropic, OpenAI, OpenRouter, DeepSeek, MiniMax, and Z.AI. Select a default model and test a provider's connection before using it. A key from earlier builds becomes an Anthropic provider automatically.
 
 | Feature | Runs | Needs API key |
 | --- | --- | --- |
 | Recognize text, search by text | On-device (Vision) | No |
 | Mask sensitive information | On-device (Vision + pattern matching) | No |
-| Translate, ask about a screenshot | Your default model | Yes |
+| Translate image (text-only by default) | Vision OCR + your default text model | Yes |
+| Ask about a screenshot | Your default vision model | Yes |
 | Auto title and tags (off by default) | Your default model | Yes |
 
-AI features send the screenshot with its current annotations, so anything already masked stays masked. Automatic naming sends every new screenshot to the API, so it stays off until you enable it.
+**AI Tools → Translate Image** asks for the target language, recognizes text locally, and sends numbered text blocks to the default model. A text-only model works: image input is off by default. Enable **Use visual context** only with a model that supports images; this also sends the annotated screenshot for OCR correction and context.
+
+The translated image opens in a separate editor. Select a text block to edit its translation, font size, text/fill colors, or box dimensions; drag it to move, disable translation for individual blocks, compare with the original, undo, or reset edits. Copy or save a PNG at the original pixel dimensions. With automatic screenshot saving enabled, translated images also get their own library item; subsequent edits update that item. **Save to Library** also works when automatic saving is off. The source screenshot is preserved. Unchanged text stays intact. Background erasure uses sampled flat colors, not generative inpainting: inspect complex backgrounds and overflowing text before exporting.
+
+Image inputs use the screenshot with its current annotations, so anything already masked stays masked. Automatic naming sends every new screenshot to the API, so it stays off until you enable it.
 
 ## Build from source
 
@@ -145,6 +171,10 @@ The standalone Swift checks work with Command Line Tools and do not require XCTe
 ./scripts/test-history.sh
 ./scripts/test-hotkey.sh
 ./scripts/test-models.sh
+./scripts/test-log-error.sh
+./scripts/test-markdown.sh
+./scripts/test-image-translation.sh
+./scripts/test-image-translation-integration.sh
 ./scripts/test-updates.sh
 ```
 

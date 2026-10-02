@@ -36,6 +36,8 @@ struct BackgroundLayout {
     var verticalPadding: CGFloat = 120
     var cornerRadius: CGFloat = 16
     var shadow = true
+    var borderWidth: CGFloat = 0
+    var borderColor: NSColor = .white
 
     func canvasSize(for source: CGSize) -> CGSize {
         CGSize(width: source.width + horizontalPadding * 2, height: source.height + verticalPadding * 2)
@@ -75,6 +77,17 @@ enum BackgroundRenderer {
             context.restoreGState()
         }
         NSGraphicsContext.restoreGraphicsState()
+        // Draw inside the image bounds so even a zero-padding export keeps the
+        // entire border. The same renderer serves preview and full-size output.
+        let width = min(max(layout.borderWidth, 0), min(photo.width, photo.height) / 2)
+        if width > 0 {
+            let inset = width / 2
+            let border = NSBezierPath(roundedRect: photo.insetBy(dx: inset, dy: inset),
+                                      xRadius: max(radius - inset, 0), yRadius: max(radius - inset, 0))
+            border.lineWidth = width
+            layout.borderColor.setStroke()
+            border.stroke()
+        }
         NSGraphicsContext.restoreGraphicsState()
     }
 

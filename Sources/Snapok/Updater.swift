@@ -124,7 +124,7 @@ final class Updater {
                 offer(release)
             }
         } catch {
-            log("update check failed: \(error.localizedDescription)")
+            log("update check failed", error: error)
             status = userInitiated ? .failed(error.localizedDescription) : .idle
             if userInitiated { alert(L("Couldn't check for updates", "检查更新失败"), error.localizedDescription) }
         }
@@ -197,7 +197,7 @@ final class Updater {
             Telemetry.flush()
             relaunch(target)
         } catch {
-            log("update failed: \(error.localizedDescription)")
+            log("update failed", error: error)
             status = .failed(error.localizedDescription)
             let alert = NSAlert()
             alert.messageText = L("The update couldn't be installed", "更新安装失败")

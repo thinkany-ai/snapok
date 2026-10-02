@@ -1,14 +1,10 @@
 import AppKit
 
-/// Settings → Models: the default model, the providers that supply models (bring your own key), and AI features.
+/// Settings → Models: the default model and the providers that supply models (bring your own key).
 @MainActor
 final class ModelsPane: SectionedPageView {
     private let defaultModel = NSPopUpButton()
     private var providerList: NSStackView!
-    private let translateTarget = NSPopUpButton()
-    private let targets = ["简体中文", "繁體中文", "English", "日本語", "한국어"]
-    private let autoName = NSButton(checkboxWithTitle: L("Automatically title and tag new screenshots (sends images to the default model)",
-                                                         "截图后自动起标题、打标签（会把截图发送给默认模型）"), target: nil, action: nil)
     private var editor: ProviderEditor?
 
     init() {
@@ -27,17 +23,6 @@ final class ModelsPane: SectionedPageView {
         addButton.contentTintColor = Brand.accent
         addButton.attributedTitle = NSAttributedString(string: addButton.title, attributes: [.foregroundColor: Brand.accent, .font: NSFont.systemFont(ofSize: 13)])
         providerList = addSection(L("Providers", "服务商"), accessory: addButton, rows: [])
-
-        translateTarget.addItems(withTitles: targets)
-        translateTarget.target = self
-        translateTarget.action = #selector(saveFeatures)
-        autoName.target = self
-        autoName.action = #selector(saveFeatures)
-        autoName.cell?.wraps = true
-        let autoNameRow = NSStackView(views: [autoName])
-        autoNameRow.edgeInsets = NSEdgeInsets(top: 12, left: 18, bottom: 12, right: 18)
-        addSection(L("AI Features", "AI 功能"), rows: [Self.formRow(L("Translate to", "翻译成"), control: translateTarget), autoNameRow])
-        add(Self.footnote(L("Text recognition and redaction always run on this Mac.", "文字识别和敏感信息打码始终在本机完成。")), spacingBefore: 8)
 
         reload()
         NotificationCenter.default.addObserver(forName: ModelsStore.didChange, object: nil, queue: .main) { [weak self] _ in
@@ -82,9 +67,6 @@ final class ModelsPane: SectionedPageView {
                             onDelete: { [weak self] in self?.confirmDelete(provider) })
             }
         Self.fill(providerList, with: rows)
-
-        translateTarget.selectItem(withTitle: AppSettings.translateTarget)
-        autoName.state = AppSettings.autoName ? .on : .off
     }
 
     @objc private func chooseDefault() {
@@ -92,11 +74,6 @@ final class ModelsPane: SectionedPageView {
         var config = ModelsStore.config
         config.defaultModel = id
         ModelsStore.config = config
-    }
-
-    @objc private func saveFeatures() {
-        AppSettings.translateTarget = translateTarget.titleOfSelectedItem ?? "简体中文"
-        AppSettings.autoName = autoName.state == .on
     }
 
     @objc private func addProvider() {
@@ -126,7 +103,7 @@ final class ModelsPane: SectionedPageView {
         }
     }
 
-    private static func formRow(_ title: String, control: NSView) -> NSView {
+    static func formRow(_ title: String, control: NSView) -> NSView {
         let label = NSTextField(labelWithString: title)
         label.font = .systemFont(ofSize: 14)
         let row = NSStackView(views: [label, NSView(), control])
@@ -135,10 +112,45 @@ final class ModelsPane: SectionedPageView {
         return row
     }
 
-    private static func emptyRow(_ text: String) -> NSView {
+    static func emptyRow(_ text: String) -> NSView {
         let row = NSStackView(views: [footnote(text)])
         row.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
         return row
+    }
+}
+
+/// Settings → AI Features: what the default model is used for.
+@MainActor
+final class AIFeaturesPane: SectionedPageView {
+    private let autoName = NSButton(checkboxWithTitle: L("Automatically title and tag new screenshots (sends images to the default model)",
+                                                         "截图后自动起标题、打标签（会把截图发送给默认模型）"), target: nil, action: nil)
+
+    init() {
+        super.init(title: L("AI Features", "AI 功能"))
+        autoName.target = self
+        autoName.action = #selector(save)
+        autoName.cell?.wraps = true
+        let autoNameRow = NSStackView(views: [autoName])
+        autoNameRow.edgeInsets = NSEdgeInsets(top: 12, left: 18, bottom: 12, right: 18)
+        let rows = [autoNameRow]
+        let list = NSStackView()
+        list.orientation = .vertical
+        list.spacing = 0
+        Self.fill(list, with: rows)
+        add(Self.card(list, inset: NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)))
+        add(Self.footnote(L("Translation, questions, and automatic naming use the default model from Models. Choose a target language when translating. Text recognition and redaction always run on this Mac.",
+                            "翻译、提问和自动命名使用「模型」里的默认模型；翻译时选择目标语言；文字识别和敏感信息打码始终在本机完成。")), spacingBefore: 8)
+        load()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func load() {
+        autoName.state = AppSettings.autoName ? .on : .off
+    }
+
+    @objc private func save() {
+        AppSettings.autoName = autoName.state == .on
     }
 }
 

@@ -1,32 +1,7 @@
 import AppKit
 import Carbon
 
-enum MainPage: Int, CaseIterable {
-    case library
-    case general
-    case ai
-    case about
-
-    var title: String {
-        switch self {
-        case .library: return L("Library", "截图库")
-        case .general: return L("General", "通用设置")
-        case .ai: return L("Models", "模型")
-        case .about: return L("About", "关于")
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .library: return "photo.on.rectangle"
-        case .general: return "gearshape"
-        case .ai: return "cpu"
-        case .about: return "info.circle"
-        }
-    }
-}
-
-/// The main window: a sidebar for navigation and a content area showing the library or a settings page.
+/// The main window: a sidebar with the library and a Settings entry, the library itself, and Settings as a panel on top.
 @MainActor
 final class MainWindowController: NSWindowController, NSWindowDelegate {
     var onCapture: (() -> Void)? {
@@ -40,12 +15,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private var library = LibraryPane()
-    private lazy var general = GeneralSettingsPane()
-    private lazy var ai = ModelsPane()
-    private lazy var about = AboutPane()
     private let content = ContentBackground()
-    private var navItems: [SidebarItem] = []
-    private var currentPage: MainPage?
+    private var settings: SettingsOverlay?
 
     init() {
         let window = NSWindow(
@@ -64,67 +35,85 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
         build()
-        show(.library)
         if !window.setFrameUsingName("SnapokMain") { window.center() }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// Rebuilds every view in the current language, keeping the open page and window frame.
+    /// Rebuilds every view in the current language, keeping the window frame and any open Settings page.
     func relocalize() {
-        let page = currentPage ?? .library
+        let openPage = settings?.page
+        settings = nil
+        // Swap old and new views in one frame, so the window never shows a half-built state.
+        window?.disableScreenUpdatesUntilFlush()
         window?.contentView?.subviews.forEach { $0.removeFromSuperview() }
-        navItems = []
-        currentPage = nil
         library = LibraryPane()
         library.onCapture = onCapture
         library.onOpen = onOpen
         library.onPin = onPin
-        general = GeneralSettingsPane()
-        ai = ModelsPane()
-        about = AboutPane()
         build()
-        show(page)
+        if let openPage { showSettings(openPage, animated: false) }
     }
 
-    func present(_ page: MainPage? = nil) {
-        if let page { show(page) }
+    /// Shows the library, closing Settings if it is open.
+    func present() {
+        closeSettings()
+        bringToFront()
+    }
+
+    func presentSettings(_ page: SettingsPage) {
+        bringToFront()
+        showSettings(page)
+    }
+
+    private func bringToFront() {
         HistoryStore.shared.purgeExpired()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func show(_ page: MainPage) {
-        if page == currentPage { return }
-        currentPage = page
-        navItems.forEach { $0.isSelected = $0.page == page }
-        let view: NSView
-        switch page {
-        case .library: view = library
-        case .general: general.load(); view = general
-        case .ai: ai.load(); view = ai
-        case .about: view = about
+    private func showSettings(_ page: SettingsPage, animated: Bool = true) {
+        if let settings {
+            settings.show(page)
+            return
         }
-        content.subviews.forEach { $0.removeFromSuperview() }
-        view.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(view)
+        guard let root = window?.contentView else { return }
+        let overlay = SettingsOverlay(page: page)
+        overlay.onClose = { [weak self] in self?.closeSettings() }
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(overlay)
         NSLayoutConstraint.activate([
-            view.topAnchor.constraint(equalTo: content.topAnchor),
-            view.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            view.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            view.bottomAnchor.constraint(equalTo: content.bottomAnchor)
+            overlay.topAnchor.constraint(equalTo: root.topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            overlay.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: root.trailingAnchor)
         ])
-        if page == .library { window?.makeFirstResponder(library.collection) }
+        settings = overlay
+        guard animated else { return }
+        overlay.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            overlay.animator().alphaValue = 1
+        }
+    }
+
+    private func closeSettings() {
+        guard let overlay = settings else { return }
+        settings = nil
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.12
+            overlay.animator().alphaValue = 0
+        }, completionHandler: {
+            MainActor.assumeIsolated { overlay.removeFromSuperview() }
+        })
+        window?.makeFirstResponder(library.collection)
     }
 
     private func build() {
         guard let root = window?.contentView else { return }
 
-        let sidebar = NSVisualEffectView()
-        sidebar.material = .sidebar
-        sidebar.blendingMode = .behindWindow
-        sidebar.state = .followsWindowActiveState
+        let sidebar = SidebarBackground()
 
         let icon = NSImageView(image: Brand.appIcon ?? NSImage())
         icon.imageScaling = .scaleProportionallyUpOrDown
@@ -138,28 +127,36 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             brand.addArrangedSubview(ChannelBadge(text: "Dev"))
         }
 
-        let nav = NSStackView()
+        let libraryItem = SidebarItem(title: L("Library", "截图库"), symbol: "photo.on.rectangle") { [weak self] in self?.present() }
+        libraryItem.isSelected = true
+        let nav = NSStackView(views: [libraryItem])
         nav.orientation = .vertical
         nav.alignment = .leading
         nav.spacing = 4
-        for page in MainPage.allCases {
-            let item = SidebarItem(page: page)
-            item.onSelect = { [weak self] page in self?.show(page) }
-            navItems.append(item)
-            nav.addArrangedSubview(item)
-            item.widthAnchor.constraint(equalTo: nav.widthAnchor).isActive = true
-        }
+        libraryItem.widthAnchor.constraint(equalTo: nav.widthAnchor).isActive = true
 
         let shortcut = makeShortcutCard()
         let version = NSTextField(labelWithString: L("Version ", "版本 ") + ((Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"))
         version.font = .systemFont(ofSize: 11)
         version.textColor = .tertiaryLabelColor
+        let settingsButton = NSButton(title: L("Settings", "设置"), image: NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)!, target: self, action: #selector(openSettings))
+        settingsButton.isBordered = false
+        settingsButton.imagePosition = .imageLeading
+        settingsButton.font = .systemFont(ofSize: 11)
+        settingsButton.imageScaling = .scaleNone
+        settingsButton.symbolConfiguration = .init(pointSize: 12, weight: .regular)
+        settingsButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        settingsButton.contentTintColor = .secondaryLabelColor
+        settingsButton.toolTip = L("Settings", "设置")
+        settingsButton.setAccessibilityLabel(L("Settings", "设置"))
 
         [sidebar, content].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview($0)
         }
-        [brand, nav, shortcut, version].forEach {
+        library.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(library)
+        [brand, nav, shortcut, version, settingsButton].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             sidebar.addSubview($0)
         }
@@ -182,8 +179,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             shortcut.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -14),
             shortcut.bottomAnchor.constraint(equalTo: version.topAnchor, constant: -14),
             version.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 22),
-            version.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -16)
+            version.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -16),
+            version.trailingAnchor.constraint(lessThanOrEqualTo: settingsButton.leadingAnchor, constant: -8),
+            settingsButton.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -18),
+            settingsButton.centerYAnchor.constraint(equalTo: version.centerYAnchor),
+            settingsButton.heightAnchor.constraint(equalToConstant: 24),
+            library.topAnchor.constraint(equalTo: content.topAnchor),
+            library.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            library.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            library.bottomAnchor.constraint(equalTo: content.bottomAnchor)
         ])
+        window?.makeFirstResponder(library.collection)
+    }
+
+    @objc private func openSettings() {
+        presentSettings(.general)
     }
 
     private func makeShortcutCard() -> NSView {
@@ -214,6 +224,42 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 }
 
+/// Opaque, theme-aware navigation surface, unaffected by the desktop wallpaper.
+@MainActor
+final class SidebarBackground: NSView {
+    private let divider = CALayer()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.addSublayer(divider)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        layer?.backgroundColor = (dark
+            ? NSColor(srgbRed: 0.095, green: 0.095, blue: 0.105, alpha: 1)
+            : NSColor(srgbRed: 0.94, green: 0.94, blue: 0.952, alpha: 1)).cgColor
+        divider.backgroundColor = NSColor(white: dark ? 1 : 0, alpha: dark ? 0.07 : 0.06).cgColor
+    }
+
+    override func layout() {
+        super.layout()
+        let scale = window?.backingScaleFactor ?? 2
+        let width = 1 / scale
+        divider.frame = CGRect(x: bounds.maxX - width, y: bounds.minY, width: width, height: bounds.height)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
 /// The content area's soft gray background, so white cards stand out.
 @MainActor
 final class ContentBackground: NSView {
@@ -227,8 +273,7 @@ final class ContentBackground: NSView {
 
 @MainActor
 final class SidebarItem: NSView {
-    let page: MainPage
-    var onSelect: ((MainPage) -> Void)?
+    private let onSelect: () -> Void
     var isSelected = false {
         didSet { needsDisplay = true; updateColors() }
     }
@@ -236,14 +281,14 @@ final class SidebarItem: NSView {
     private let label = NSTextField(labelWithString: "")
     private var hovering = false
 
-    init(page: MainPage) {
-        self.page = page
+    init(title: String, symbol: String, onSelect: @escaping () -> Void) {
+        self.onSelect = onSelect
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 9
-        icon.image = NSImage(systemSymbolName: page.symbol, accessibilityDescription: nil)
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         icon.symbolConfiguration = .init(pointSize: 15, weight: .regular)
-        label.stringValue = page.title
+        label.stringValue = title
         label.font = .systemFont(ofSize: 14, weight: .medium)
         let row = NSStackView(views: [icon, label])
         row.spacing = 10
@@ -257,7 +302,7 @@ final class SidebarItem: NSView {
         ])
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
         setAccessibilityRole(.button)
-        setAccessibilityLabel(page.title)
+        setAccessibilityLabel(title)
         updateColors()
     }
 
@@ -266,8 +311,19 @@ final class SidebarItem: NSView {
     override var wantsUpdateLayer: Bool { true }
 
     override func updateLayer() {
-        let alpha: CGFloat = isSelected ? 0.09 : hovering ? 0.05 : 0
-        layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(alpha).cgColor
+        let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let color = isSelected
+                ? Brand.accent.withAlphaComponent(dark ? 0.16 : 0.10)
+                : NSColor.labelColor.withAlphaComponent(hovering ? 0.05 : 0)
+            layer?.backgroundColor = color.cgColor
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+        updateColors()
     }
 
     private func updateColors() {
@@ -277,8 +333,8 @@ final class SidebarItem: NSView {
 
     override func mouseEntered(with event: NSEvent) { hovering = true; needsDisplay = true }
     override func mouseExited(with event: NSEvent) { hovering = false; needsDisplay = true }
-    override func mouseDown(with event: NSEvent) { onSelect?(page) }
-    override func accessibilityPerformPress() -> Bool { onSelect?(page); return true }
+    override func mouseDown(with event: NSEvent) { onSelect() }
+    override func accessibilityPerformPress() -> Bool { onSelect(); return true }
 }
 
 /// A filled brand-color button; system bezels ignore custom colors on non-default buttons.

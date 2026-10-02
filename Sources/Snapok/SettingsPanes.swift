@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import ApplicationServices
 
 /// Shared look for the right-hand pages of the main window: a large title, a subtitle, then content.
 @MainActor
@@ -102,10 +103,17 @@ final class GeneralSettingsPane: PageView {
     private let autoSave = NSButton(checkboxWithTitle: L("Automatically save screenshots to the library", "截图后自动保存到截图库"), target: nil, action: nil)
     private let retention = NSPopUpButton()
     private let language = NSPopUpButton()
+    private let theme = NSPopUpButton()
+    private let snappingStatus = NSTextField(labelWithString: "")
+    private let enableSnapping = NSButton(title: L("Enable…", "开启…"), target: nil, action: nil)
     private let retentionOptions: [(title: String, days: Int)] = [(L("7 days", "7 天"), 7), (L("30 days", "30 天"), 30), (L("90 days", "90 天"), 90), (L("Forever", "永久"), 0)]
 
     init() {
-        super.init(title: L("General", "通用设置"), subtitle: L("Shortcuts and screenshot storage preferences.", "快捷键、截图库保存方式。"))
+        super.init(title: L("General", "通用设置"), subtitle: L("Appearance, language, shortcuts, and screenshot storage preferences.", "外观、语言、快捷键与截图库保存方式。"))
+        theme.addItems(withTitles: AppAppearance.allCases.map(\.title))
+        theme.target = self
+        theme.action = #selector(saveTheme)
+        theme.setAccessibilityLabel(L("Theme", "主题"))
         language.addItems(withTitles: ["English", "简体中文"])
         language.selectItem(at: AppLanguage.allCases.firstIndex(of: AppLanguage.saved()) ?? 0)
         language.target = self
@@ -119,9 +127,19 @@ final class GeneralSettingsPane: PageView {
         openFolder.bezelStyle = .rounded
         let clear = NSButton(title: L("Clear Library…", "清空截图库…"), target: self, action: #selector(clearHistory))
         clear.bezelStyle = .rounded
+        enableSnapping.bezelStyle = .rounded
+        enableSnapping.target = self
+        enableSnapping.action = #selector(requestComponentSnapping)
+        let snappingRow = NSStackView(views: [snappingStatus, enableSnapping])
+        snappingRow.spacing = 10
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshSnappingStatus),
+                                               name: NSApplication.didBecomeActiveNotification, object: nil)
         addCard(Self.form([
             [Self.label(L("Language", "语言")), language],
+            [Self.label(L("Theme", "主题")), theme],
             [Self.label(L("Screenshot shortcut", "截图快捷键")), ShortcutRecorder()],
+            [Self.label(L("Component snapping", "组件自动吸附")), snappingRow],
+            [NSGridCell.emptyContentView, Self.label(L("Accessibility access locates Dock icons and controls.", "需要辅助功能权限，用于定位 Dock 图标及控件。"), secondary: true)],
             [NSGridCell.emptyContentView, autoSave],
             [Self.label(L("Keep screenshots", "保留时间")), retention],
             [NSGridCell.emptyContentView, Self.label(L("Screenshots older than this period are deleted automatically.", "超过保留时间的截图会自动删除。"), secondary: true)],
@@ -134,8 +152,29 @@ final class GeneralSettingsPane: PageView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func load() {
+        refreshSnappingStatus()
+        theme.selectItem(at: AppAppearance.allCases.firstIndex(of: AppAppearance.saved()) ?? 0)
         autoSave.state = AppSettings.autoSave ? .on : .off
         retention.selectItem(at: retentionOptions.firstIndex { $0.days == AppSettings.retentionDays } ?? 1)
+    }
+
+    @objc private func refreshSnappingStatus() {
+        let enabled = AXIsProcessTrusted()
+        snappingStatus.stringValue = enabled
+            ? L("Enabled", "已开启")
+            : L("Accessibility permission needed", "未开启辅助功能权限")
+        snappingStatus.textColor = enabled ? .systemGreen : .secondaryLabelColor
+        enableSnapping.isHidden = enabled
+    }
+
+    @objc private func requestComponentSnapping() {
+        ComponentSnappingPermission.request()
+        refreshSnappingStatus()
+    }
+
+    @objc private func saveTheme() {
+        guard AppAppearance.allCases.indices.contains(theme.indexOfSelectedItem) else { return }
+        AppAppearance.allCases[theme.indexOfSelectedItem].select()
     }
 
     @objc private func saveLanguage() {
@@ -364,8 +403,12 @@ class SectionedPageView: PageView {
             stack.topAnchor.constraint(equalTo: document.topAnchor),
             stack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
             stack.bottomAnchor.constraint(equalTo: document.bottomAnchor),
-            stack.widthAnchor.constraint(equalToConstant: 640)
+            // 560 pt of cards plus insets, narrower when the window is.
+            stack.widthAnchor.constraint(lessThanOrEqualTo: document.widthAnchor)
         ])
+        let preferred = stack.widthAnchor.constraint(equalToConstant: 640)
+        preferred.priority = .defaultHigh
+        preferred.isActive = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

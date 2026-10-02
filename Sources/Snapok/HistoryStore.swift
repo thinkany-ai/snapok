@@ -16,7 +16,8 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: "history.retentionDays") }
     }
 
-    static var translateTarget: String {
+    /// Preselect the last language in the per-translation chooser; every request still asks.
+    static var lastTranslationTarget: String {
         get { defaults.string(forKey: "ai.translateTarget") ?? "简体中文" }
         set { defaults.set(newValue, forKey: "ai.translateTarget") }
     }
@@ -178,7 +179,7 @@ final class HistoryStore {
         do {
             try encoder.encode(item).write(to: metaURL(item.id), options: .atomic)
         } catch {
-            log("history meta write failed: \(error)")
+            log("history meta write failed", error: error)
         }
     }
 
@@ -210,7 +211,7 @@ final class HistoryStore {
             try FileManager.default.createDirectory(at: folder(item.id), withIntermediateDirectories: true)
             try png.write(to: originalURL(item.id), options: .atomic)
         } catch {
-            log("history write failed: \(error)")
+            log("history write failed", error: error)
             return nil
         }
         writeMeta(item)
@@ -219,6 +220,34 @@ final class HistoryStore {
         notify()
         AIAssistant.enrich(item)
         return item
+    }
+
+    /// Saves a translated derivative without overwriting its source or running AI naming again.
+    /// Explicit saves work even when automatic screenshot saving is disabled.
+    @discardableResult
+    func saveTranslation(png: Data, target: String, text: String, replacing id: UUID? = nil) throws -> UUID {
+        guard let bitmap = NSBitmapImageRep(data: png), let cgImage = bitmap.cgImage else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let size = CGSize(width: cgImage.width, height: cgImage.height)
+        let image = NSImage(cgImage: cgImage, size: size)
+        let index = id.flatMap { savedID in items.firstIndex { $0.id == savedID } }
+        var item = index.map { items[$0] } ?? HistoryItem(
+            id: UUID(), createdAt: Date(), pointSize: size, pixelSize: size,
+            title: L("Translated Image · \(target)", "翻译图片 · \(target)"),
+            tags: ["translation", target], ocrText: text, annotations: [])
+        item.ocrText = text
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let metadata = try encoder.encode(item)
+        try FileManager.default.createDirectory(at: folder(item.id), withIntermediateDirectories: true)
+        try png.write(to: originalURL(item.id), options: .atomic)
+        try metadata.write(to: metaURL(item.id), options: .atomic)
+        writeThumbnail(for: item, original: image)
+        if let index { items[index] = item } else { items.insert(item, at: 0) }
+        notify()
+        return item.id
     }
 
     func item(_ id: UUID) -> HistoryItem? {

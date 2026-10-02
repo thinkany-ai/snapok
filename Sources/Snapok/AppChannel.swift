@@ -105,7 +105,7 @@ enum LegacyMigration {
                 }
                 log("moved legacy SnapAny history into \(historyRoot.path)")
             } catch {
-                log("legacy history migration failed: \(error)")
+                log("legacy history migration failed", error: error)
             }
         }
 

@@ -44,16 +44,42 @@ struct HistoryTests {
         precondition(store.items.first?.matches("测试") == true && store.items.first?.matches("不存在") == false, "search matches titles")
         let rendered = store.rendered(for: store.item(item.id)!)
         precondition(rendered?.size == image.size, "rendered copy keeps point size")
-        store.delete([item.id])
-        precondition(store.item(item.id) == nil && !FileManager.default.fileExists(atPath: store.root.appendingPathComponent(item.id.uuidString).path),
-                     "delete removes the folder")
+
 
         // On-device text recognition reads the text and boxes the sensitive values.
         let scan = await TextScanner.scan(image.cgImage(forProposedRect: nil, context: nil, hints: nil)!)
         precondition(scan.text.contains("example.com"), "OCR must read the rendered text, got: \(scan.text)")
         precondition(scan.sensitiveBoxes.count >= 2, "email and phone must be boxed, got \(scan.sensitiveBoxes.count)")
 
-        print("Passed history checks: annotation coding, sensitive detection, mosaic coverage, store lifecycle, on-device OCR")
+        // A translated derivative gets its own item and updates in place while preserving the source.
+        let autoSave = AppSettings.autoSave
+        AppSettings.autoSave = false
+        defer { AppSettings.autoSave = autoSave }
+        let sourcePNG = image.pngData!
+        let sourceBefore = try Data(contentsOf: store.fileURL(for: item))
+        let translatedID = try store.saveTranslation(png: sourcePNG, target: "日本語", text: "設定 保存")
+        let count = store.items.count
+        guard let translated = store.item(translatedID) else { preconditionFailure("translation not saved") }
+        precondition(translated.tags.contains("日本語") && translated.matches("設定"), "translation must be searchable")
+        precondition(store.original(for: translated) != nil && store.thumbnail(for: translated) != nil)
+        let revisedPNG = render("Updated translation", size: image.size).pngData!
+        let revisedID = try store.saveTranslation(png: revisedPNG, target: "日本語", text: "修正した翻訳", replacing: translatedID)
+        precondition(revisedID == translatedID && store.items.count == count, "Edits must update the same library item")
+        precondition(store.item(translatedID)!.matches("修正した翻訳"))
+        let savedPNG = try Data(contentsOf: store.fileURL(for: store.item(translatedID)!))
+        precondition(savedPNG == revisedPNG, "Latest translated pixels must be persisted")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decodedTranslation = try decoder.decode(HistoryItem.self, from: Data(contentsOf: store.root.appendingPathComponent(translatedID.uuidString).appendingPathComponent("meta.json")))
+        precondition(decodedTranslation.id == translatedID && decodedTranslation.ocrText == "修正した翻訳")
+        let sourceAfter = try Data(contentsOf: store.fileURL(for: item))
+        precondition(sourceAfter == sourceBefore && translatedID != item.id, "Translated edits must leave the source capture intact")
+        store.delete([translatedID])
+        store.delete([item.id])
+        precondition(store.item(item.id) == nil && !FileManager.default.fileExists(atPath: store.root.appendingPathComponent(item.id.uuidString).path),
+                     "delete removes the folder")
+
+        print("Passed history checks: annotation coding, sensitive detection, mosaic coverage, store lifecycle, on-device OCR, translated-image persistence")
     }
 
     static func render(_ text: String, size: CGSize) -> NSImage {

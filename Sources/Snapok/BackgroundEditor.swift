@@ -1,6 +1,35 @@
 import AppKit
 import UniformTypeIdentifiers
 
+/// Resolve the semantic background in the view's current appearance, including live theme changes.
+@MainActor
+private final class EditorChromeView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
+@MainActor
+private final class EditorControlsDocument: NSView {
+    override var isFlipped: Bool { true }
+}
+
 @MainActor
 final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     var onClose: (() -> Void)?
@@ -15,6 +44,8 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     private let preview: BackgroundPreview
     private let backgroundPicker = NSPopUpButton()
     private let colorWell = NSColorWell()
+    private let borderColorWell = NSColorWell()
+    private var preferences = BackgroundPreferences.load()
     private let dimensions = NSTextField(labelWithString: "")
     private let feedback = NSTextField(wrappingLabelWithString: "")
     private var sliders: [NSSlider] = []
@@ -23,6 +54,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     private var wallpaper: NSImage?
     private var customImage: NSImage?
     private var selectedBackground = 0
+    private var selectedGradient = 0
 
     init(image: NSImage, screen: NSScreen?, annotations: [Annotation] = []) {
         preview = BackgroundPreview(image: image, annotations: annotations)
@@ -37,6 +69,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         super.init(window: window)
         window.delegate = self
         buildInterface()
+        restorePreferences()
         preview.onChange = { [weak self] in self?.syncTools() }
         preview.onCommand = { [weak self] action in self?.performQuickAction(action) }
         window.makeFirstResponder(preview)
@@ -60,16 +93,12 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
 
     private func buildInterface() {
         guard let root = window?.contentView else { return }
-        let header = NSView()
-        header.wantsLayer = true
-        header.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        let header = EditorChromeView()
         let toolbar = makeQuickToolbar()
         toolbar.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(toolbar)
-        let sidebar = NSView()
+        let sidebar = EditorChromeView()
         [header, sidebar, preview].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; root.addSubview($0) }
-        sidebar.wantsLayer = true
-        sidebar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         let title = label(L("Edit Image", "编辑图片"), size: 19, weight: .semibold)
         let subtitle = label(L("Annotate your image and adjust the background and padding.", "标注图片，调整背景与留白。"), size: 12)
         subtitle.textColor = .secondaryLabelColor
@@ -92,7 +121,16 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         controls.alignment = .leading
         controls.spacing = 16
         controls.translatesAutoresizingMaskIntoConstraints = false
-        sidebar.addSubview(controls)
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let document = EditorControlsDocument()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(controls)
+        scroll.documentView = document
+        sidebar.addSubview(scroll)
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: root.topAnchor), header.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: root.trailingAnchor), header.heightAnchor.constraint(equalToConstant: 82),
@@ -104,21 +142,26 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
             preview.leadingAnchor.constraint(equalTo: root.leadingAnchor), preview.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor),
             toolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor), toolbar.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor),
             toolbar.bottomAnchor.constraint(equalTo: root.bottomAnchor), toolbar.heightAnchor.constraint(equalToConstant: 96),
-            controls.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 24), controls.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 20),
-            controls.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -20)
+            scroll.topAnchor.constraint(equalTo: sidebar.topAnchor), scroll.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            controls.topAnchor.constraint(equalTo: document.topAnchor, constant: 24), controls.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 20),
+            controls.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -20),
+            controls.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -24)
         ])
         func add(_ view: NSView) {
             controls.addArrangedSubview(view)
             view.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
         }
         add(label(L("Background", "背景"), size: 14, weight: .semibold))
-        backgroundPicker.addItems(withTitles: [L("Berry Pink", "莓粉渐变"), L("Coastal Blue", "海岸蓝"), L("Twilight Purple", "暮光紫"), L("Desktop Wallpaper", "当前桌面壁纸"), L("Solid Color", "纯色"), L("Custom Image", "自定义图片")])
+        backgroundPicker.addItems(withTitles: [L("Gradient", "渐变"), L("Desktop Wallpaper", "当前桌面壁纸"), L("Solid Color", "纯色"), L("Custom Image", "自定义图片")])
         backgroundPicker.target = self
         backgroundPicker.action = #selector(changeBackground)
         add(backgroundPicker)
         let swatches = NSStackView()
         swatches.spacing = 8
         swatches.distribution = .fillEqually
+        let presetNames = [L("Berry Pink", "莓粉渐变"), L("Coastal Blue", "海岸蓝"), L("Twilight Purple", "暮光紫")]
         for index in 0..<3 {
             let swatch = NSButton(image: NSImage(size: CGSize(width: 72, height: 42), flipped: false) { rect in
                 EditorBackground.gradient(index).draw(in: rect)
@@ -127,8 +170,8 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
             swatch.tag = index
             swatch.isBordered = false
             swatch.imageScaling = .scaleAxesIndependently
-            swatch.toolTip = backgroundPicker.itemTitle(at: index)
-            swatch.setAccessibilityLabel(backgroundPicker.itemTitle(at: index))
+            swatch.toolTip = presetNames[index]
+            swatch.setAccessibilityLabel(presetNames[index])
             swatch.heightAnchor.constraint(equalToConstant: 42).isActive = true
             swatches.addArrangedSubview(swatch)
         }
@@ -147,7 +190,16 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         add(controlRow(L("Horizontal", "左右"), value: 120, maximum: 600, tag: 0))
         add(controlRow(L("Vertical", "上下"), value: 120, maximum: 600, tag: 1))
         add(label(L("Appearance", "截图外观"), size: 14, weight: .semibold))
-        add(controlRow(L("Corner radius", "圆角"), value: 16, maximum: 80, tag: 2))
+        add(controlRow(L("Border", "描边"), value: 0, maximum: 20, tag: 2))
+        borderColorWell.color = .white
+        borderColorWell.target = self
+        borderColorWell.action = #selector(updateComposition)
+        borderColorWell.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        borderColorWell.setAccessibilityLabel(L("Border color", "描边颜色"))
+        let borderColorRow = NSStackView(views: [label(L("Border color", "描边颜色"), size: 12), borderColorWell])
+        borderColorRow.spacing = 12
+        add(borderColorRow)
+        add(controlRow(L("Corner radius", "圆角"), value: 16, maximum: 80, tag: 3))
         shadowButton.state = .on
         shadowButton.target = self
         shadowButton.action = #selector(updateComposition)
@@ -162,9 +214,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     }
 
     private func makeQuickToolbar() -> NSView {
-        let bar = NSView()
-        bar.wantsLayer = true
-        bar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        let bar = EditorChromeView()
         let tools = NSStackView()
         tools.spacing = 6
         let select = NSButton(image: NSImage(systemSymbolName: "cursorarrow", accessibilityDescription: L("Select and move annotations", "选择和移动标注"))!, target: self, action: #selector(selectAnnotation))
@@ -296,37 +346,41 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     @objc private func updateComposition() {
         preview.composition = BackgroundLayout(horizontalPadding: CGFloat(sliders[0].integerValue),
                                                verticalPadding: CGFloat(sliders[1].integerValue),
-                                               cornerRadius: CGFloat(sliders[2].integerValue), shadow: shadowButton.state == .on)
+                                               cornerRadius: CGFloat(sliders[3].integerValue), shadow: shadowButton.state == .on,
+                                               borderWidth: CGFloat(sliders[2].integerValue), borderColor: borderColorWell.color)
+        savePreferences()
         refresh()
     }
 
     @objc private func selectPreset(_ sender: NSButton) {
-        backgroundPicker.selectItem(at: sender.tag)
+        selectedGradient = sender.tag
+        backgroundPicker.selectItem(at: 0)
         changeBackground()
     }
 
     @objc private func changeBackground() {
         let index = backgroundPicker.indexOfSelectedItem
         switch index {
-        case 0...2: preview.background = .gradient(index)
-        case 3:
+        case 0: preview.background = .gradient(selectedGradient)
+        case 1:
             guard let wallpaper else {
                 backgroundPicker.selectItem(at: selectedBackground)
                 feedback.stringValue = L("Unable to read the desktop wallpaper. Choose a local background image.", "无法读取当前壁纸，请选择本地背景图片。")
                 return
             }
             preview.background = .image(wallpaper)
-        case 4: preview.background = .color(colorWell.color)
+        case 2: preview.background = .color(colorWell.color)
         default:
             guard let customImage else { importBackground(); return }
             preview.background = .image(customImage)
         }
         selectedBackground = index
+        savePreferences()
         refresh()
     }
 
     @objc private func changeColor() {
-        backgroundPicker.selectItem(at: 4)
+        backgroundPicker.selectItem(at: 2)
         changeBackground()
     }
 
@@ -350,9 +404,69 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
                 return
             }
             self.customImage = image
-            self.backgroundPicker.selectItem(at: 5)
+            self.preferences.customImagePath = url.path
+            // Keep a local copy so the preference survives moving the imported file.
+            if let data = image.tiffRepresentation {
+                let folder = AppChannel.supportDirectory
+                let savedURL = folder.appendingPathComponent("EditorBackground.tiff")
+                do {
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    try data.write(to: savedURL, options: .atomic)
+                    self.preferences.customImagePath = savedURL.path
+                } catch {
+                    log("editor background persistence failed", error: error)
+                }
+            }
+            self.backgroundPicker.selectItem(at: 3)
             self.changeBackground()
         }
+    }
+
+    private func restorePreferences() {
+        selectedGradient = preferences.gradient
+        selectedBackground = preferences.backgroundType
+        if let path = preferences.customImagePath { customImage = NSImage(contentsOfFile: path) }
+        if (selectedBackground == 1 && wallpaper == nil) || (selectedBackground == 3 && customImage == nil) {
+            selectedBackground = 0
+        }
+        colorWell.color = Self.color(preferences.backgroundColor)
+        borderColorWell.color = Self.color(preferences.borderColor)
+        let restored = [preferences.horizontalPadding, preferences.verticalPadding, preferences.borderWidth, preferences.cornerRadius]
+        for (index, value) in restored.enumerated() {
+            sliders[index].integerValue = value
+            values[index].integerValue = value
+        }
+        shadowButton.state = preferences.shadow ? .on : .off
+        backgroundPicker.selectItem(at: selectedBackground)
+        switch selectedBackground {
+        case 1: preview.background = .image(wallpaper!)
+        case 2: preview.background = .color(colorWell.color)
+        case 3: preview.background = .image(customImage!)
+        default: preview.background = .gradient(selectedGradient)
+        }
+        updateComposition()
+    }
+
+    private func savePreferences() {
+        preferences.backgroundType = selectedBackground
+        preferences.gradient = selectedGradient
+        preferences.horizontalPadding = sliders[0].integerValue
+        preferences.verticalPadding = sliders[1].integerValue
+        preferences.borderWidth = sliders[2].integerValue
+        preferences.cornerRadius = sliders[3].integerValue
+        preferences.shadow = shadowButton.state == .on
+        preferences.backgroundColor = Self.components(colorWell.color)
+        preferences.borderColor = Self.components(borderColorWell.color)
+        preferences.save()
+    }
+
+    private static func color(_ components: [Double]) -> NSColor {
+        NSColor(srgbRed: components[0], green: components[1], blue: components[2], alpha: components[3])
+    }
+
+    private static func components(_ color: NSColor) -> [Double] {
+        let color = color.usingColorSpace(.sRGB) ?? .white
+        return [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent]
     }
 
     private func refresh() {
@@ -398,7 +512,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         let entries: [(String, String, Selector)] = [
             (L("Recognize Text", "识别文字"), "text.viewfinder", #selector(recognizeText)),
             (L("Redact Sensitive Information", "敏感信息打码"), "eye.slash", #selector(redactSensitive)),
-            (L("Translate", "翻译"), "character.bubble", #selector(translateText)),
+            (L("Translate Image", "翻译图片"), "character.bubble", #selector(translateText)),
             (L("Ask a Question…", "提问…"), "questionmark.bubble", #selector(askQuestion))
         ]
         for (title, symbol, action) in entries {
@@ -447,10 +561,30 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     }
 
     @objc private func translateText() {
-        Telemetry.capture("ai_used", ["feature": "translate"])
-        guard let image = annotatedSource else { return }
-        AIResultWindowController.show(title: L("Translate to \(AppSettings.translateTarget)", "翻译成\(AppSettings.translateTarget)"), near: window) {
-            try await AIAssistant.translate(image)
+        guard let window, let image = annotatedSource else { return }
+        let alert = NSAlert()
+        alert.messageText = L("Translate Image", "翻译图片")
+        alert.informativeText = L("Choose a language to replace text in the image. Text is sent to your configured model; the image is only sent when visual context is enabled.",
+                                 "选择目标语言，将译文放回图片原位置。默认只向模型发送文字；启用截图理解时才发送图片。")
+        let targetPicker = NSPopUpButton(frame: CGRect(x: 0, y: 0, width: 280, height: 28))
+        targetPicker.addItems(withTitles: ["简体中文", "繁體中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Português", "Italiano", "العربية", "Русский", "हिन्दी"])
+        targetPicker.selectItem(withTitle: AppSettings.lastTranslationTarget)
+        targetPicker.setAccessibilityLabel(L("Target language", "目标语言"))
+        let vision = NSButton(checkboxWithTitle: L("Use visual context (requires a vision model)", "结合截图理解（需要视觉模型）"), target: nil, action: nil)
+        let options = NSStackView(views: [targetPicker, vision])
+        options.orientation = .vertical
+        options.alignment = .leading
+        options.spacing = 10
+        options.frame = CGRect(x: 0, y: 0, width: 360, height: 65)
+        alert.accessoryView = options
+        alert.addButton(withTitle: L("Translate", "翻译"))
+        alert.addButton(withTitle: L("Cancel", "取消"))
+        alert.window.initialFirstResponder = targetPicker
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let target = targetPicker.titleOfSelectedItem else { return }
+            AppSettings.lastTranslationTarget = target
+            Telemetry.capture("ai_used", ["feature": "translate"])
+            ImageTranslationWindowController.show(image: image, target: target, useVision: vision.state == .on, near: self?.window)
         }
     }
 
