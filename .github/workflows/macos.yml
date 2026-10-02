@@ -49,6 +49,7 @@ jobs:
           ./scripts/test-image-translation.sh
           ./scripts/test-image-translation-integration.sh
           ./scripts/test-updates.sh
+          ./scripts/test-scroll.sh
 
       - name: Check signing configuration
         id: signing

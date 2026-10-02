@@ -252,6 +252,7 @@ final class ScreenshotController {
     private var windows: [CaptureWindow] = []
     private var pinnedWindows: [PinnedImageWindow] = []
     private var editors: [BackgroundEditorController] = []
+    private var scrollSession: ScrollingCaptureSession?
     private var screenImage: NSImage?
     private var preparingCapture = false
 
@@ -264,7 +265,7 @@ final class ScreenshotController {
             }
             return
         }
-        guard !preparingCapture else { return }
+        guard !preparingCapture, scrollSession == nil else { return }
         preparingCapture = true
         Task { [weak self] in
             guard let self else { return }
@@ -309,6 +310,11 @@ final class ScreenshotController {
     }
 
     private func finish(_ result: CaptureResult, mode: CaptureFinishMode, from window: CaptureWindow) {
+        if mode == .scroll {
+            closeWindows()
+            startScrollingCapture(in: result.globalRect)
+            return
+        }
         guard let image = screenImage,
               let rendered = ScreenCapture.render(image: image, result: result) else {
             closeWindows()
@@ -319,6 +325,8 @@ final class ScreenshotController {
         let screen = NSScreen.screens.first { $0.frame.intersects(result.globalRect) }
         Telemetry.capture("capture_finished", ["action": "\(mode)", "annotations": result.annotations.count])
         switch mode {
+        case .scroll:
+            break
         case .editImage:
             closeWindows()
             guard let original else { return }
@@ -345,6 +353,27 @@ final class ScreenshotController {
                 closeWindows()
             }
         }
+    }
+
+    /// Hands the selected area to a scrolling capture; the stitched image opens in the editor.
+    private func startScrollingCapture(in rect: CGRect) {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) ?? NSScreen.main,
+              let session = ScrollingCaptureSession(rect: rect, screen: screen) else {
+            NSSound.beep()
+            return
+        }
+        scrollSession = session
+        session.onCancel = { [weak self] in self?.scrollSession = nil }
+        session.onFinish = { [weak self] image, automatic in
+            guard let self else { return }
+            self.scrollSession = nil
+            Telemetry.capture("capture_finished", ["action": "scroll", "automatic": automatic,
+                                                   "height": Int(image.size.height)])
+            let item = HistoryStore.shared.add(original: image, annotations: [])
+            self.openEditor(image: image, annotations: [], screen: screen, historyID: item?.id)
+        }
+        session.start()
     }
 
     /// Adds a finished capture to the library after the overlay is gone, so writing the PNG never delays it.
@@ -424,6 +453,7 @@ extension ScreenshotController: CaptureWindowDelegate {
 }
 
 enum CaptureFinishMode {
+    case scroll
     case editImage
     case copy
     case save
@@ -1005,7 +1035,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
 
     private var toolbarItems: [ToolbarItem] {
         ToolKind.allCases.map { ToolbarItem.button(.tool($0)) }
-            + [.separator, .button(.undo), .button(.pin), .button(.save), .separator, .button(.editImage), .button(.cancel), .button(.done)]
+            + [.separator, .button(.undo), .button(.pin), .button(.save), .separator, .button(.scroll), .button(.editImage), .button(.cancel), .button(.done)]
     }
 
     private func drawToolbar(for selection: CGRect) {
@@ -1201,6 +1231,8 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             selectedAnnotationIndex = nil
         case .undo:
             undo()
+        case .scroll:
+            finish(.scroll)
         case .editImage:
             finish(.editImage)
         case .pin:
@@ -1817,6 +1849,7 @@ enum ToolbarItem {
 }
 
 enum ToolbarAction: Equatable {
+    case scroll
     case editImage
     case tool(ToolKind)
     case undo
@@ -1830,6 +1863,7 @@ enum ToolbarAction: Equatable {
     var symbol: String? {
         switch self {
         case .tool(let tool): return tool.symbol
+        case .scroll: return "arrow.up.and.down.text.horizontal"
         case .editImage: return "square.and.pencil"
         case .undo: return "arrow.uturn.backward"
         case .pin: return "pin"
@@ -1843,6 +1877,7 @@ enum ToolbarAction: Equatable {
     var title: String? {
         switch self {
         case .tool(let tool): return tool.title
+        case .scroll: return L("Scrolling Capture", "长截图")
         case .editImage: return L("Edit Image (\(AppChannel.editImageHotKey.symbol))", "编辑图片（\(AppChannel.editImageHotKey.symbol)）")
         case .undo: return L("Undo", "撤销")
         case .pin: return L("Pin to Screen", "钉在屏幕上")

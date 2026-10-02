@@ -18,6 +18,7 @@ Snapok is a native screenshot utility built with Swift and AppKit. Its main wind
 ## Features
 
 - **Capture any region:** drag a selection, click a window, or hover over accessible UI components to select them. Detect the Dock, menu bar, and status items as well. Scroll through parent regions; hold Option to select the whole window or system UI container.
+- **Scrolling capture:** capture a long page, chat, or document in one image. Scroll inside the selected area yourself, or let Snapok scroll it; fixed toolbars and input bars appear once.
 - **Annotate:** rectangle, ellipse, arrow, pen, text, and mosaic, with adjustable sizes and colors. Move, restyle, delete, and undo annotations.
 - **Edit images:** keep annotations editable after capture, add desktop wallpaper, gradients, a solid color, or a custom background image.
 - **Frame screenshots:** adjust horizontal and vertical padding, border width and color, corner radius, and shadow with a live preview.
@@ -46,7 +47,7 @@ Open **System Settings → Privacy & Security**:
 | Permission | Purpose |
 | --- | --- |
 | Screen Recording / Screen & System Audio Recording | Capture the screen. Required for screenshots. |
-| Accessibility | Detect individual controls and panels in other apps. Also used to locate the visible Dock on newer macOS versions. Optional; ordinary window selection and manual capture still work without it. |
+| Accessibility | Detect individual controls and panels in other apps, locate the visible Dock on newer macOS versions, and scroll automatically during a scrolling capture. Optional; ordinary window selection, manual capture, and scrolling captures you scroll yourself still work without it. |
 
 Open **Settings → General → Component Snapping** and choose **Enable…** to request Accessibility access. Some apps expose only their containing window or panel; custom-drawn content cannot always be detected as separate components. Dynamic desktop wallpapers may require importing a local background image instead.
 
@@ -62,12 +63,23 @@ Press **Control + Command + A** to capture (**Shift + Option + A** in Snapok Dev
 | Move / resize selection | Drag inside / drag edges or handles |
 | Nudge selection | Arrow keys; `Shift` for 10-point steps |
 | Edit image | `⌘E` (release) / `⌥E` (development), after selecting a capture |
+| Scrolling capture | Select the area, then click the scrolling capture button in the toolbar |
 | Copy capture | `Enter`, `⌘C`, or double-click the selection |
 | Save PNG | `⌘S` |
 | Undo annotation edit | `⌘Z` |
 | Delete selected annotation | `Delete` |
 | Reselect / cancel capture | Right-click / `Esc` |
 | Close image editor | `⌘W` |
+
+### Scrolling capture
+
+Select the area to capture, for example the content of a web page or a chat, then click **Scrolling Capture** in the toolbar. A dashed frame marks the area and a panel beside it shows the image as it grows:
+
+- Scroll down inside the frame with the trackpad or mouse. Scrolling back up is ignored; if you scroll too fast for consecutive captures to overlap, the panel asks you to scroll more slowly.
+- Or click **Scroll Automatically** (requires Accessibility). Snapok scrolls about half the frame at a time and stops at the end of the content.
+- Press **Done** (`Return`) to open the result in the image editor, where it is also saved to the library, or **Cancel** (`Esc`).
+
+Rows that stay put while the rest scrolls, such as a toolbar or a message box, are recognized as fixed and appear once, at the top or bottom. Captures stop at 30,000 pixels. Content that changes while you scroll (animations, videos, lazy-loading placeholders) can break the alignment; scroll past it slowly or capture it separately.
 
 ### Image editor
 
@@ -176,6 +188,7 @@ The standalone Swift checks work with Command Line Tools and do not require XCTe
 ./scripts/test-image-translation.sh
 ./scripts/test-image-translation-integration.sh
 ./scripts/test-updates.sh
+./scripts/test-scroll.sh
 ```
 
 `make test` runs them all.
