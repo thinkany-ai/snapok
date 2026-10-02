@@ -1,17 +1,20 @@
 import CoreGraphics
 import Foundation
 
-/// One captured frame of the scrolling area, as tightly packed RGBA8 pixels.
+/// One captured frame of the scrolling area, as tightly packed 8-bit RGBA pixels, or BGRA as the capture
+/// stream delivers them (comparisons don't depend on the channel order; only the final image does).
 struct ScrollFrame: Sendable {
     let width: Int
     let height: Int
     let pixels: [UInt8]
+    let isBGRA: Bool
 
-    init(width: Int, height: Int, pixels: [UInt8]) {
+    init(width: Int, height: Int, pixels: [UInt8], isBGRA: Bool = false) {
         precondition(pixels.count == width * height * 4)
         self.width = width
         self.height = height
         self.pixels = pixels
+        self.isBGRA = isBGRA
     }
 
     init?(image: CGImage) {
@@ -31,19 +34,29 @@ struct ScrollFrame: Sendable {
 
     /// The gray level of each row in `bands` column bands (fine enough to tell lines of text apart),
     /// quantized so faint rendering noise still matches; row-major.
+    ///
+    /// Hot path (every frame, also in unoptimized development builds), hence raw pointers and every other pixel
+    /// in wide bands.
     fileprivate func levels(bands: Int) -> [UInt8] {
         var levels = [UInt8](repeating: 0, count: height * bands)
-        pixels.withUnsafeBufferPointer { pixels in
-            for row in 0..<height {
-                let base = row * width * 4
-                for band in 0..<bands {
-                    let start = band * width / bands, end = (band + 1) * width / bands
-                    var sum = 0
-                    for x in start..<end {
-                        let i = base + x * 4
-                        sum += Int(pixels[i]) * 3 + Int(pixels[i + 1]) * 6 + Int(pixels[i + 2])
+        let starts = (0...bands).map { $0 * width / bands }
+        let step = max(1, width / bands / 3)
+        pixels.withUnsafeBufferPointer { source in
+            levels.withUnsafeMutableBufferPointer { out in
+                guard let pixels = source.baseAddress, let levels = out.baseAddress else { return }
+                for row in 0..<height {
+                    let line = pixels + row * width * 4
+                    for band in 0..<bands {
+                        var sum = 0, count = 0, x = starts[band]
+                        let end = starts[band + 1]
+                        while x < end {
+                            let p = line + x * 4
+                            sum += Int(p[0]) &* 3 &+ Int(p[1]) &* 6 &+ Int(p[2])
+                            count += 1
+                            x += step
+                        }
+                        levels[row * bands + band] = UInt8(sum / max(1, count) / 60)
                     }
-                    levels[row * bands + band] = UInt8(sum / max(1, end - start) / 10 / 6)
                 }
             }
         }
@@ -58,17 +71,20 @@ private struct RowSignature: Equatable {
     let plain: Bool
 
     static func rows(_ levels: [UInt8], bands: Int, using columns: [Int]) -> [RowSignature] {
-        (0..<(levels.count / bands)).map { row in
-            var hasher = Hasher()
-            let base = row * bands
-            let first = levels[base + (columns.first ?? 0)]
-            var plain = true
-            for band in columns {
-                let level = levels[base + band]
-                if level != first { plain = false }
-                hasher.combine(level)
+        levels.withUnsafeBufferPointer { levels in
+            columns.withUnsafeBufferPointer { columns in
+                (0..<(levels.count / bands)).map { row in
+                    let line = levels.baseAddress! + row * bands
+                    let first = line[columns.first ?? 0]
+                    var hash: UInt64 = 0xcbf29ce484222325, plain = true
+                    for band in columns {
+                        let level = line[band]
+                        if level != first { plain = false }
+                        hash = (hash ^ UInt64(level)) &* 0x100000001b3
+                    }
+                    return RowSignature(hash: Int(truncatingIfNeeded: hash), plain: plain)
+                }
             }
-            return RowSignature(hash: hasher.finalize(), plain: plain)
         }
     }
 }
@@ -130,17 +146,20 @@ struct ScrollStitcher {
     /// `expectedOffset` is the distance just scrolled programmatically (automatic scrolling). It is used only when
     /// the moving part of the frame is plain (blank page margins) and the distance can't be measured.
     mutating func add(_ frame: ScrollFrame, expectedOffset: Int? = nil) -> Step {
-        guard frame.width == width, frame.height == last.height else { return .lostTrack }
+        guard frame.width == width, frame.height == last.height, frame.isBGRA == last.isBGRA else { return .lostTrack }
         let rows = frame.height
         let levels = frame.levels(bands: bands)
         // Bands that differ in more than a few rows moved; measure with those (the content), not with
         // columns that stayed the same (a sidebar), which would make every row a mismatch.
-        var moving = [Bool](repeating: false, count: bands)
-        for band in 0..<bands {
-            var changed = 0
-            for row in 0..<rows where levels[row * bands + band] != lastLevels[row * bands + band] { changed += 1 }
-            moving[band] = changed * 100 > rows * 3
+        var changed = [Int](repeating: 0, count: bands)
+        levels.withUnsafeBufferPointer { now in
+            lastLevels.withUnsafeBufferPointer { before in
+                changed.withUnsafeMutableBufferPointer { changed in
+                    for i in 0..<(rows * bands) where now[i] != before[i] { changed[i % bands] += 1 }
+                }
+            }
         }
+        let moving = changed.map { $0 * 100 > rows * 3 }
         let movingColumns = measurable.filter { moving[$0] }
         let columns = movingColumns.isEmpty ? measurable : movingColumns
         let current = RowSignature.rows(levels, bands: bands, using: columns)
@@ -162,7 +181,8 @@ struct ScrollStitcher {
         let band = header..<(rows - footer)
         let offset: Int
         var estimated = false
-        switch Self.offset(previous: lastSignatures, current: current, band: band) {
+        switch Self.offset(previous: lastLevels, current: levels, bands: bands, columns: columns,
+                           previousRows: lastSignatures, currentRows: current, band: band) {
         case .found(let found): offset = found
         case .featureless:
             estimated = true
@@ -170,6 +190,7 @@ struct ScrollStitcher {
             if band.count < 8 { return .unchanged }
             guard let expectedOffset, expectedOffset > 0, expectedOffset < band.count else { return .lostTrack }
             offset = expectedOffset
+        case .still: return .unchanged
         case .noMatch: return .lostTrack
         }
         // A still blank row next to a bar is the bar's padding if what should have scrolled into its place
@@ -222,26 +243,109 @@ struct ScrollStitcher {
         return signatures[gapStart...gapEnd].allSatisfy(\.plain) && gapEnd - gapStart + 1 >= signatures.count / 2
     }
 
-    private enum Measurement { case found(Int), featureless, noMatch }
+    private enum Measurement { case found(Int), still, featureless, noMatch }
 
-    /// The scroll distance in rows: the shift that lines up the most distinctive rows of `band`.
-    private static func offset(previous: [RowSignature], current: [RowSignature], band: Range<Int>) -> Measurement {
-        var rowsByHash: [Int: [Int]] = [:]
-        for row in band where !previous[row].plain { rowsByHash[previous[row].hash, default: []].append(row) }
-        var votes: [Int: Int] = [:]
-        var distinctive = 0
-        for row in band where !current[row].plain {
-            distinctive += 1
-            for match in rowsByHash[current[row].hash] ?? [] where match > row { votes[match - row, default: 0] += 1 }
+    /// The scroll distance in rows: the shift under which the frames differ least, measured as the mean gray
+    /// difference over the moving columns. Not exact equality: apps that scroll by fractions of a pixel
+    /// (browsers, with a trackpad) redraw the content slightly blurred, so the same row never matches exactly.
+    ///
+    /// Every shift is ranked on one brightness value per row; the best 40 are checked on 8 column groups and
+    /// the best 6 of those on all columns. The winner has to be clearly better than not moving at all and than
+    /// the runner-up elsewhere. Runs on every frame, also in unoptimized development builds, hence raw pointers.
+    private static func offset(previous: [UInt8], current: [UInt8], bands: Int, columns: [Int],
+                               previousRows: [RowSignature], currentRows: [RowSignature], band: Range<Int>) -> Measurement {
+        let distinctive = band.filter { !currentRows[$0].plain }
+        guard distinctive.count >= 3, band.filter({ !previousRows[$0].plain }).count >= 3 else { return .featureless }
+        let groups = min(8, columns.count)
+        let groupStarts = (0...groups).map { $0 * columns.count / groups }
+        // Per row: the mean level of each column group, and of all of them.
+        func profiles(_ levels: [UInt8]) -> (groups: [Float], mean: [Float]) {
+            var grouped = [Float](repeating: 0, count: band.upperBound * groups)
+            var mean = [Float](repeating: 0, count: band.upperBound)
+            levels.withUnsafeBufferPointer { levels in
+                columns.withUnsafeBufferPointer { columns in
+                    for row in band {
+                        let line = levels.baseAddress! + row * bands
+                        var all = 0
+                        for group in 0..<groups {
+                            var sum = 0
+                            for i in groupStarts[group]..<groupStarts[group + 1] { sum += Int(line[columns[i]]) }
+                            all += sum
+                            grouped[row * groups + group] = Float(sum) / Float(max(1, groupStarts[group + 1] - groupStarts[group]))
+                        }
+                        mean[row] = Float(all) / Float(columns.count)
+                    }
+                }
+            }
+            return (grouped, mean)
         }
-        // Nothing distinctive on one side (blank before, or blank now) leaves nothing to line up.
-        guard distinctive >= 3, rowsByHash.values.reduce(0, { $0 + $1.count }) >= 3 else { return .featureless }
-        guard let (offset, count) = votes.max(by: { $0.value < $1.value || ($0.value == $1.value && $0.key > $1.key) })
-        else { return .noMatch }
-        // Rows still on screen after the shift must agree; the ones that scrolled in can't be checked.
-        let overlap = band.filter { $0 + offset < band.upperBound && !current[$0].plain }.count
-        guard overlap >= 3, Double(count) >= Double(overlap) * 0.8 else { return .noMatch }
-        return .found(offset)
+        let before = profiles(previous), now = profiles(current)
+        // Enough of the frame must still overlap after the shift to judge it.
+        let minimumOverlap = max(12, distinctive.count / 6)
+        let upper = band.upperBound
+
+        func rank(_ offsets: [Int], keep: Int, cost: (Int) -> Float?) -> [(offset: Int, cost: Float)] {
+            Array(offsets.compactMap { offset in cost(offset).map { (offset, $0) } }.sorted { $0.1 < $1.1 }.prefix(keep))
+        }
+        let rows = distinctive
+        // The first ranking only has to keep the right shift among its 40 best, so every third row will do.
+        let sampled = stride(from: 0, to: rows.count, by: rows.count > 300 ? 3 : 1).map { rows[$0] }
+        let coarseMinimum = max(4, minimumOverlap * sampled.count / rows.count)
+        let coarse = sampled.withUnsafeBufferPointer { rows in
+            now.mean.withUnsafeBufferPointer { a in
+                before.mean.withUnsafeBufferPointer { b in
+                    rank(Array(1..<band.count), keep: 40) { offset in
+                        var cost: Float = 0, count = 0
+                        for row in rows where row + offset < upper {
+                            cost += abs(a[row] - b[row + offset])
+                            count += 1
+                        }
+                        return count >= coarseMinimum ? cost / Float(count) : nil
+                    }
+                }
+            }
+        }
+        let medium = rows.withUnsafeBufferPointer { rows in
+            now.groups.withUnsafeBufferPointer { a in
+                before.groups.withUnsafeBufferPointer { b in
+                    rank(coarse.map(\.offset), keep: 6) { offset in
+                        var cost: Float = 0, count = 0
+                        for row in rows where row + offset < upper {
+                            for group in 0..<groups { cost += abs(a[row * groups + group] - b[(row + offset) * groups + group]) }
+                            count += 1
+                        }
+                        return count == 0 ? nil : cost / Float(count)
+                    }
+                }
+            }
+        }
+        func cost(_ offset: Int) -> Float {
+            rows.withUnsafeBufferPointer { rows in
+                columns.withUnsafeBufferPointer { columns in
+                    current.withUnsafeBufferPointer { a in
+                        previous.withUnsafeBufferPointer { b in
+                            var total = 0, count = 0
+                            for row in rows where row + offset < upper {
+                                let x = a.baseAddress! + row * bands, y = b.baseAddress! + (row + offset) * bands
+                                for column in columns { total += abs(Int(x[column]) - Int(y[column])) }
+                                count += 1
+                            }
+                            return count == 0 ? .infinity : Float(total) / Float(count * columns.count)
+                        }
+                    }
+                }
+            }
+        }
+        let scored = medium.map { ($0.offset, cost($0.offset)) }.sorted { $0.1 < $1.1 }
+        guard let (best, bestCost) = scored.first else { return .noMatch }
+        let still = cost(0)
+        // Redrawn in place (a fraction of a pixel, or not at all).
+        if still < 1, still <= bestCost { return .still }
+        // Not moving at all must fit worse, and so must any shift that isn't next to the winner
+        // (repeating content, such as table rows, can line up at several distances).
+        let runnerUp = scored.dropFirst().first { abs($0.0 - best) > 2 }?.1 ?? .infinity
+        guard bestCost < 1.5, bestCost < still * 0.6, bestCost < runnerUp * 0.75 else { return .noMatch }
+        return .found(best)
     }
 
     /// The finished image: the stitched rows without fixed sidebars (columns with content that never moved).
@@ -271,7 +375,9 @@ struct ScrollStitcher {
         guard rows > 0, let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
         return CGImage(width: width, height: rows, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: rowBytes,
                        space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                       bitmapInfo: last.isBGRA
+                           ? CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+                           : CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
     }
 }

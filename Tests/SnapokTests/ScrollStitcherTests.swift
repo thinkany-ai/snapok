@@ -137,6 +137,26 @@ struct ScrollStitcherTests {
         }
         precondition(knob.height == 960 + viewport)
 
-        print("Passed scroll stitching checks: fixed bars, uneven steps, repeats, back-scroll, jumps, noise, blank stretches, size limit, sidebars, scroll bars")
+        // Scrolling by fractions of a pixel (browsers, trackpads): every frame is the page resampled, so no row
+        // matches exactly. Each step has to line up anyway, within a pixel.
+        // Lines of "text" 14 rows tall with 8-row gaps, like a real page (rows within a line are alike).
+        let smooth = (0..<900).map { y in y % 22 < 14 ? pageRow(y / 22) : pageRow(0, plain: true) }
+        func blended(_ position: Double) -> ScrollFrame {
+            let base = Int(position), f = position - Double(base)
+            return ScrollFrame(width: width, height: 200, pixels: (0..<200).flatMap { row -> [UInt8] in
+                zip(smooth[base + row], smooth[base + row + 1]).map { UInt8((Double($0) * (1 - f) + Double($1) * f).rounded()) }
+            })
+        }
+        var fractional = ScrollStitcher(first: blended(0))
+        var position = 0.0
+        for step in [12.5, 30.25, 7.75, 55.5, 41.3, 18.6, 66.4, 33.33, 90.1, 24.9] {
+            position += step
+            let result = fractional.add(blended(position))
+            if case .grew = result {} else { fatalError("fractional step to \(position): \(result)") }
+        }
+        precondition(abs(fractional.height - (Int(position) + 200)) <= 2, "height \(fractional.height) for \(position)")
+        precondition(fractional.add(blended(position + 0.3)) == .unchanged, "a sub-pixel wobble is not a scroll")
+
+        print("Passed scroll stitching checks: fixed bars, uneven steps, repeats, back-scroll, jumps, noise, blank stretches, size limit, sidebars, scroll bars, fractional scrolling")
     }
 }

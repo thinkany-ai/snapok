@@ -26,28 +26,19 @@ final class ScrollFrameReceiver: NSObject, SCStreamOutput, @unchecked Sendable {
 }
 
 extension ScrollFrame {
-    /// Copies a BGRA pixel buffer from the capture stream into RGBA.
+    /// Copies a BGRA pixel buffer from the capture stream, row by row (rows may be padded).
     init?(bgra buffer: CVPixelBuffer) {
         guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_32BGRA,
               CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { return nil }
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
         let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
-        let stride = CVPixelBufferGetBytesPerRow(buffer)
-        guard width > 0, height > 0, let base = CVPixelBufferGetBaseAddress(buffer)?.assumingMemoryBound(to: UInt8.self) else { return nil }
-        var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        pixels.withUnsafeMutableBufferPointer { out in
-            for y in 0..<height {
-                let row = base + y * stride
-                for x in 0..<width {
-                    let i = (y * width + x) * 4, j = x * 4
-                    out[i] = row[j + 2]
-                    out[i + 1] = row[j + 1]
-                    out[i + 2] = row[j]
-                    out[i + 3] = 255
-                }
-            }
+        let stride = CVPixelBufferGetBytesPerRow(buffer), rowBytes = width * 4
+        guard width > 0, height > 0, let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+        var pixels = [UInt8](repeating: 0, count: rowBytes * height)
+        pixels.withUnsafeMutableBytes { out in
+            for y in 0..<height { (out.baseAddress! + y * rowBytes).copyMemory(from: base + y * stride, byteCount: rowBytes) }
         }
-        self.init(width: width, height: height, pixels: pixels)
+        self.init(width: width, height: height, pixels: pixels, isBGRA: true)
     }
 }
 
@@ -70,6 +61,7 @@ actor ScrollCaptureEngine {
     private var stitcher: ScrollStitcher?
     private var seen = 0
     private var counts: [String: Int] = [:]
+    private var lastPreview = Date.distantPast
 
     /// `sourceRect` is in points, relative to the display's top-left corner.
     init(displayID: CGDirectDisplayID, sourceRect: CGRect, scale: CGFloat) {
@@ -111,8 +103,9 @@ actor ScrollCaptureEngine {
         guard let (frame, serial) = receiver.take(after: seen) else { return nil }
         seen = serial
         guard var stitcher else {
-            stitcher = ScrollStitcher(first: frame)
-            return Update(step: .grew(frame.height), height: frame.height, preview: stitcher?.makeImage(bottomRows: frame.height))
+            let first = ScrollStitcher(first: frame)
+            stitcher = first
+            return Update(step: .grew(frame.height), height: frame.height, preview: preview(of: first, rows: frame.height))
         }
         let step = stitcher.add(frame, expectedOffset: expectedOffset)
         self.stitcher = stitcher
@@ -124,7 +117,24 @@ actor ScrollCaptureEngine {
         case .lostTrack: grew = false; counts["lost", default: 0] += 1
         case .full: grew = false; counts["full", default: 0] += 1
         }
-        return Update(step: step, height: stitcher.height, preview: grew ? stitcher.makeImage(bottomRows: frame.height * 3) : nil)
+        // The panel shows a small preview; refreshing it a few times a second is plenty.
+        let showPreview = grew && Date().timeIntervalSince(lastPreview) > 0.25
+        return Update(step: step, height: stitcher.height, preview: showPreview ? preview(of: stitcher, rows: frame.height * 2) : nil)
+    }
+
+    /// The bottom of the stitched image, scaled down to the panel's width.
+    private func preview(of stitcher: ScrollStitcher, rows: Int) -> CGImage? {
+        lastPreview = Date()
+        guard let image = stitcher.makeImage(bottomRows: rows) else { return nil }
+        let scale = min(1, 400 / CGFloat(image.width))
+        let width = Int(CGFloat(image.width) * scale), height = Int(CGFloat(image.height) * scale)
+        guard width > 0, height > 0,
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
     }
 
     func result() -> CGImage? { stitcher?.makeImage() }
