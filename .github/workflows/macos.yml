@@ -44,6 +44,8 @@ jobs:
           ./scripts/test-history.sh
           ./scripts/test-hotkey.sh
           ./scripts/test-models.sh
+          ./scripts/test-image-translation.sh
+          ./scripts/test-image-translation-integration.sh
           ./scripts/test-updates.sh
 
       - name: Check signing configuration
@@ -133,11 +135,8 @@ jobs:
             echo '::notice::SENTRY_AUTH_TOKEN is not configured; crash reports will not be symbolicated.'
             exit 0
           fi
-          # The DSN ends in the project ID; look up the org and project slugs sentry-cli needs.
-          PROJECT_ID="${SENTRY_DSN##*/}"
-          read -r ORG PROJECT < <(curl -fsS -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" https://us.sentry.io/api/0/projects/ |
-            python3 -c "import json,sys; p=[p for p in json.load(sys.stdin) if p['id']=='$PROJECT_ID'][0]; print(p['organization']['slug'], p['slug'])")
-          npx -y @sentry/cli debug-files upload --org "$ORG" --project "$PROJECT" --include-sources dist/archives/*.dSYM
+          # An organization token carries its organization; the project ID is the last part of the DSN.
+          npx -y @sentry/cli debug-files upload --project "${SENTRY_DSN##*/}" --include-sources dist/archives/*.dSYM
 
       # Signed pushes go to https://cdn.snapok.app, which the in-app updater reads:
       # dev branch → dev/latest.json (Snapok Dev), v* tags → latest.json (Snapok).
