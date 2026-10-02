@@ -45,12 +45,36 @@ struct EditorCanvasTests {
         precondition(canvas.annotations[0].color.matches(.red))
         canvas.undoEdit()
         precondition(canvas.annotations[0].rect == original.rect)
+        // Display zoom and pan must preserve source-space coordinates and exports.
+        let anchor = CGPoint(x: 420, y: 290)
+        let anchoredPoint = canvas.imagePoint(from: anchor)
+        canvas.setZoom(2, around: anchor)
+        let afterZoom = canvas.imagePoint(from: anchor)
+        precondition(abs(afterZoom.x - anchoredPoint.x) < 0.001 && abs(afterZoom.y - anchoredPoint.y) < 0.001)
+        canvas.panBy(dx: 40, dy: -20)
+        let afterPan = canvas.imagePoint(from: anchor)
+        precondition(abs(afterPan.x - afterZoom.x + 10) < 0.001 && abs(afterPan.y - afterZoom.y - 5) < 0.001)
+        canvas.chooseTool(.arrow)
+        canvas.mouseDown(with: event(.leftMouseDown, 420, 290))
+        canvas.mouseDragged(with: event(.leftMouseDragged, 460, 330))
+        canvas.mouseUp(with: event(.leftMouseUp, 460, 330))
+        precondition(canvas.annotations.last!.rect.size == CGSize(width: 10, height: 10), "Zoomed drawing must use image coordinates")
+        canvas.undoEdit()
+        canvas.panBy(dx: 100000, dy: -100000)
+        let clampedPoint = canvas.imagePoint(from: anchor)
+        canvas.panBy(dx: 100000, dy: -100000)
+        precondition(canvas.imagePoint(from: anchor) == clampedPoint, "Panning must stop at canvas edges")
+        canvas.fitToWindow()
+        precondition(canvas.imagePoint(from: CGPoint(x: 360, y: 260)) == CGPoint(x: 150, y: 100))
+        canvas.setZoom(2)
         let composite = BackgroundRenderer.render(source: canvas.source, background: .color(.white), layout: BackgroundLayout()) { cg in
             canvas.drawAnnotations(in: cg)
         }!
         let bitmap = NSBitmapImageRep(cgImage: composite.cgImage(forProposedRect: nil, context: nil, hints: nil)!)
         let color = bitmap.colorAt(x: 180, y: 380)!
         precondition(color.redComponent > 0.9 && color.greenComponent < 0.3, "Export must include source-space annotations at Retina scale")
+        precondition(composite.size == CGSize(width: 840, height: 640), "Display zoom must not change exported dimensions")
+        canvas.fitToWindow()
         let editor = BackgroundEditorController(image: image, screen: nil, annotations: [original])
         let root = editor.window!.contentView!
         root.layoutSubtreeIfNeeded()
@@ -73,9 +97,34 @@ struct EditorCanvasTests {
                 NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: y), modifierFlags: [], timestamp: 0,
                     windowNumber: captureWindow.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
             }
+            let colorClipboard = NSPasteboard.withUniqueName()
+            defer { colorClipboard.releaseGlobally() }
+            view.mouseMoved(with: captureEvent(.mouseMoved, 100, 100))
+            precondition(view.copyColorValue(to: colorClipboard) == "#FFFFFF")
+            precondition(view.copyColorValue(format: .rgb, to: colorClipboard) == "rgb(255, 255, 255)")
+            precondition(colorClipboard.string(forType: .string) == "rgb(255, 255, 255)")
+            colorClipboard.clearContents()
+            view.copyCurrentContent(to: colorClipboard)
+            precondition(colorClipboard.string(forType: .string) == "#FFFFFF")
+            precondition(delegate.mode == nil, "Copying a color must keep the screenshot session open")
+            let copyColor = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .shift], timestamp: 0,
+                windowNumber: captureWindow.windowNumber, context: nil, characters: "C", charactersIgnoringModifiers: "c",
+                isARepeat: false, keyCode: UInt16(kVK_ANSI_C))!
+            precondition(CaptureView.matchesCopyColorShortcut(copyColor))
+            precondition(CaptureView.colorCopyFormat(for: copyColor) == .rgb)
+            let hexShortcut = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .option], timestamp: 0,
+                windowNumber: captureWindow.windowNumber, context: nil, characters: "c", charactersIgnoringModifiers: "c",
+                isARepeat: false, keyCode: UInt16(kVK_ANSI_C))!
+            precondition(CaptureView.colorCopyFormat(for: hexShortcut) == .hex)
+            view.mouseMoved(with: captureEvent(.mouseMoved, -10, -10))
+            precondition(view.copyColorValue(to: colorClipboard) == nil, "Do not sample outside this display")
+            precondition(captureWindow.performKeyEquivalent(with: copyColor), "Color shortcut must be consumed before Copy Image menu actions")
             view.mouseDown(with: captureEvent(.leftMouseDown, 100, 100))
             view.mouseDragged(with: captureEvent(.leftMouseDragged, 300, 250))
             view.mouseUp(with: captureEvent(.leftMouseUp, 300, 250))
+            view.copyCurrentContent(to: colorClipboard)
+            guard case .copy? = delegate.mode else { preconditionFailure("Copy must finish the screenshot after a region is selected") }
+            precondition(delegate.result?.globalRect.size == CGSize(width: 200, height: 150))
             precondition(AppChannel.editImageHotKey(forRelease: true).menuModifiers == .command)
             precondition(AppChannel.editImageHotKey(forRelease: false).menuModifiers == .option)
             let edit = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: AppChannel.editImageHotKey.menuModifiers, timestamp: 0,

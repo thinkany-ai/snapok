@@ -48,6 +48,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     private var preferences = BackgroundPreferences.load()
     private let dimensions = NSTextField(labelWithString: "")
     private let feedback = NSTextField(wrappingLabelWithString: "")
+    private let zoomLabel = NSTextField(labelWithString: "")
     private var sliders: [NSSlider] = []
     private var values: [NSTextField] = []
     private let shadowButton = NSButton(checkboxWithTitle: L("Soft shadow", "柔和阴影"), target: nil, action: nil)
@@ -72,6 +73,8 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         restorePreferences()
         preview.onChange = { [weak self] in self?.syncTools() }
         preview.onCommand = { [weak self] action in self?.performQuickAction(action) }
+        preview.onViewportChange = { [weak self] in self?.updateZoomLabel() }
+        updateZoomLabel()
         window.makeFirstResponder(preview)
         window.center()
         refresh()
@@ -141,7 +144,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
             preview.topAnchor.constraint(equalTo: header.bottomAnchor), preview.bottomAnchor.constraint(equalTo: toolbar.topAnchor),
             preview.leadingAnchor.constraint(equalTo: root.leadingAnchor), preview.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor),
             toolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor), toolbar.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor),
-            toolbar.bottomAnchor.constraint(equalTo: root.bottomAnchor), toolbar.heightAnchor.constraint(equalToConstant: 96),
+            toolbar.bottomAnchor.constraint(equalTo: root.bottomAnchor), toolbar.heightAnchor.constraint(equalToConstant: 126),
             scroll.topAnchor.constraint(equalTo: sidebar.topAnchor), scroll.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
@@ -263,15 +266,36 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
             swatch.setAccessibilityLabel([L("Red", "红色"), L("Yellow", "黄色"), L("Green", "绿色"), L("Blue", "蓝色"), L("Black", "黑色"), L("White", "白色")][index])
             options.addArrangedSubview(swatch)
         }
-        [tools, options].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; bar.addSubview($0) }
+        let zoomOut = NSButton(title: "−", target: self, action: #selector(zoomOut))
+        let zoomIn = NSButton(title: "+", target: self, action: #selector(zoomIn))
+        let actualSize = NSButton(title: "100%", target: self, action: #selector(actualSize))
+        let fit = NSButton(title: L("Fit", "适应窗口"), target: self, action: #selector(fitPreview))
+        for item in [zoomOut, zoomIn, actualSize, fit] { item.bezelStyle = .rounded }
+        zoomOut.toolTip = L("Zoom out (⌘−)", "缩小（⌘−）")
+        zoomIn.toolTip = L("Zoom in (⌘+)", "放大（⌘+）")
+        fit.toolTip = L("Fit image to window (⌘0)", "适应窗口（⌘0）")
+        zoomLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        zoomLabel.alignment = .center
+        zoomLabel.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        let hint = label(L("Scroll to pan · Pinch to zoom", "滚动移动 · 双指捏合缩放"), size: 11)
+        hint.textColor = .secondaryLabelColor
+        let zoomControls = NSStackView(views: [zoomOut, zoomLabel, zoomIn, actualSize, fit, hint])
+        zoomControls.spacing = 6
+        [tools, options, zoomControls].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; bar.addSubview($0) }
         NSLayoutConstraint.activate([
             tools.centerXAnchor.constraint(equalTo: bar.centerXAnchor), tools.topAnchor.constraint(equalTo: bar.topAnchor, constant: 12),
-            options.centerXAnchor.constraint(equalTo: bar.centerXAnchor), options.topAnchor.constraint(equalTo: tools.bottomAnchor, constant: 10)
+            options.centerXAnchor.constraint(equalTo: bar.centerXAnchor), options.topAnchor.constraint(equalTo: tools.bottomAnchor, constant: 10),
+            zoomControls.centerXAnchor.constraint(equalTo: bar.centerXAnchor), zoomControls.topAnchor.constraint(equalTo: options.bottomAnchor, constant: 8)
         ])
         return bar
     }
 
     @objc private func selectAnnotation() { preview.chooseTool(nil) }
+    private func updateZoomLabel() { zoomLabel.stringValue = "\(Int((preview.zoom * 100).rounded()))%" }
+    @objc private func zoomOut() { preview.zoomBy(0.8) }
+    @objc private func zoomIn() { preview.zoomBy(1.25) }
+    @objc private func actualSize() { preview.setZoom(1) }
+    @objc private func fitPreview() { preview.fitToWindow() }
     @objc private func quickAction(_ sender: NSButton) { performQuickAction(quickActions[sender.tag]) }
     private func performQuickAction(_ action: ToolbarAction) {
         switch action {

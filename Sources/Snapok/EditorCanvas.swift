@@ -6,13 +6,16 @@ final class BackgroundPreview: NSView {
     let source: CGImage
     let sourceImage: NSImage
     var background: EditorBackground = .gradient(0)
-    var composition = BackgroundLayout()
+    var composition = BackgroundLayout() { didSet { viewportChanged() } }
     var annotations: [Annotation]
     var selectedTool: ToolKind?
     var selectedColor: NSColor = Style.colors[0]
     var sizeLevel = 1
     var onChange: (() -> Void)?
     var onCommand: ((ToolbarAction) -> Void)?
+    var onViewportChange: (() -> Void)?
+    private var manualZoom: CGFloat?
+    private var pan = CGPoint.zero
     private var selectedIndex: Int?
     private var draft: Annotation?
     private var start: CGPoint?
@@ -24,14 +27,74 @@ final class BackgroundPreview: NSView {
         source = image.cgImage(forProposedRect: nil, context: nil, hints: nil)!
         self.annotations = annotations
         super.init(frame: .zero)
+        clipsToBounds = true
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var acceptsFirstResponder: Bool { true }
 
     private var pixelScale: CGFloat { CGFloat(source.width) / sourceImage.size.width }
     private var canvasSize: CGSize { composition.canvasSize(for: CGSize(width: source.width, height: source.height)) }
-    private var zoom: CGFloat { min(max(1, bounds.width - 64) / canvasSize.width, max(1, bounds.height - 64) / canvasSize.height) }
-    private var canvasOrigin: CGPoint { CGPoint(x: (bounds.width - canvasSize.width * zoom) / 2, y: (bounds.height - canvasSize.height * zoom) / 2) }
+    private var fitZoom: CGFloat { min(max(1, bounds.width - 64) / canvasSize.width, max(1, bounds.height - 64) / canvasSize.height) }
+    var zoom: CGFloat { manualZoom ?? fitZoom }
+    private var canvasOrigin: CGPoint { CGPoint(x: (bounds.width - canvasSize.width * zoom) / 2 + pan.x, y: (bounds.height - canvasSize.height * zoom) / 2 + pan.y) }
+
+    func fitToWindow() {
+        manualZoom = nil
+        pan = .zero
+        viewportChanged()
+    }
+
+    /// Keep the image point under the pointer fixed while changing the display scale.
+    func setZoom(_ value: CGFloat, around anchor: CGPoint? = nil) {
+        let anchor = anchor ?? CGPoint(x: bounds.midX, y: bounds.midY)
+        let oldOrigin = canvasOrigin
+        let oldZoom = zoom
+        manualZoom = min(8, max(min(fitZoom, 1) / 4, value))
+        pan = CGPoint(x: anchor.x - (anchor.x - oldOrigin.x) * zoom / oldZoom - (bounds.width - canvasSize.width * zoom) / 2,
+                      y: anchor.y - (anchor.y - oldOrigin.y) * zoom / oldZoom - (bounds.height - canvasSize.height * zoom) / 2)
+        viewportChanged()
+    }
+
+    func zoomBy(_ factor: CGFloat) { setZoom(zoom * factor) }
+
+    func panBy(dx: CGFloat, dy: CGFloat) {
+        pan.x += dx
+        pan.y += dy
+        viewportChanged()
+    }
+
+    private func constrainPan() {
+        let limitX = max(0, (canvasSize.width * zoom - bounds.width) / 2 + 32)
+        let limitY = max(0, (canvasSize.height * zoom - bounds.height) / 2 + 32)
+        pan.x = min(limitX, max(-limitX, pan.x))
+        pan.y = min(limitY, max(-limitY, pan.y))
+    }
+
+    private func viewportChanged() {
+        constrainPan()
+        needsDisplay = true
+        onViewportChange?()
+    }
+
+    override func layout() {
+        super.layout()
+        viewportChanged()
+    }
+
+    override func magnify(with event: NSEvent) {
+        setZoom(zoom * max(0.1, 1 + event.magnification), around: convert(event.locationInWindow, from: nil))
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        let multiplier: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 16
+        if event.modifierFlags.contains(.command) {
+            setZoom(zoom * exp(event.scrollingDeltaY * multiplier / 200), around: convert(event.locationInWindow, from: nil))
+        } else if event.modifierFlags.contains(.shift), event.scrollingDeltaX == 0 {
+            panBy(dx: event.scrollingDeltaY * multiplier, dy: 0)
+        } else {
+            panBy(dx: event.scrollingDeltaX * multiplier, dy: -event.scrollingDeltaY * multiplier)
+        }
+    }
 
     func imagePoint(from point: CGPoint) -> CGPoint {
         CGPoint(x: ((point.x - canvasOrigin.x) / zoom - composition.horizontalPadding) / pixelScale,
@@ -179,6 +242,9 @@ final class BackgroundPreview: NSView {
     override func keyDown(with event: NSEvent) {
         if event.modifierFlags.contains(.command) {
             switch Int(event.keyCode) {
+            case kVK_ANSI_Equal: zoomBy(1.25)
+            case kVK_ANSI_Minus: zoomBy(0.8)
+            case kVK_ANSI_0: fitToWindow()
             case kVK_ANSI_Z: undoEdit()
             case kVK_ANSI_C: onCommand?(.done)
             case kVK_ANSI_S: onCommand?(.save)

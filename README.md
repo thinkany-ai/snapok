@@ -20,7 +20,7 @@ Snapok is a native screenshot utility built with Swift and AppKit. Its main wind
 - **Capture any region:** drag a selection, click a window, or hover over accessible UI components to select them. Detect the Dock, menu bar, and status items as well. Scroll through parent regions; hold Option to select the whole window or system UI container.
 - **Scrolling capture:** capture a long page, chat, or document in one image. Scroll inside the selected area yourself, or let Snapok scroll it; fixed toolbars and input bars appear once.
 - **Annotate:** rectangle, ellipse, arrow, pen, text, and mosaic, with adjustable sizes and colors. Move, restyle, delete, and undo annotations.
-- **Edit images:** keep annotations editable after capture, add desktop wallpaper, gradients, a solid color, or a custom background image.
+- **Edit images:** keep annotations editable after capture, add desktop wallpaper, gradients, a solid color, or a custom background image. Zoom with the canvas controls or a trackpad pinch, scroll to move around long images, and use `⌘+` / `⌘−` to zoom or `⌘0` to fit the image to the window.
 - **Frame screenshots:** adjust horizontal and vertical padding, border width and color, corner radius, and shadow with a live preview.
 - **Export:** copy to the clipboard, save PNG, or pin an image above other windows. Export at the original pixel resolution.
 - **Inspect pixels:** view cursor coordinates and RGB values in the capture magnifier.
@@ -65,6 +65,8 @@ Press **Control + Command + A** to capture (**Shift + Option + A** in Snapok Dev
 | Edit image | `⌘E` (release) / `⌥E` (development), after selecting a capture |
 | Scrolling capture | Select the area, then click the scrolling capture button in the toolbar |
 | Copy capture | `Enter`, `⌘C`, or double-click the selection |
+| Copy pixel color (HEX) | Hover over the target color before selecting a region, then press `⌘C`; `⌘⌥C` works with or without a selection |
+| Copy pixel color (RGB) | `⌘⇧C`, with or without a selection |
 | Save PNG | `⌘S` |
 | Undo annotation edit | `⌘Z` |
 | Delete selected annotation | `Delete` |

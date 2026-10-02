@@ -568,6 +568,15 @@ final class CaptureWindow: NSWindow {
     func editImage() { (contentView as? CaptureView)?.editImage() }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if let format = CaptureView.colorCopyFormat(for: event) {
+            (contentView as? CaptureView)?.copyColorValue(format: format)
+            return true
+        }
+        if event.keyCode == UInt16(kVK_ANSI_C),
+           event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command {
+            (contentView as? CaptureView)?.copyCurrentContent()
+            return true
+        }
         if AppChannel.matchesEditImageShortcut(event) {
             editImage()
             return true
@@ -739,6 +748,8 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     private var hoverRect: CGRect?
     private var mouseLocation: CGPoint = .zero
     private var mouseInside = false
+    private var colorCopiedAt: Date?
+    private var copiedColorFormat: ColorCopyFormat?
 
     private var selectedTool: ToolKind?
     private var selectedColor: NSColor = Style.colors[0]
@@ -847,6 +858,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
 
     private var showsMagnifier: Bool {
         guard mouseInside else { return false }
+        if let colorCopiedAt, Date().timeIntervalSince(colorCopiedAt) < 1.2 { return true }
         switch dragState {
         case .selecting, .resizingSelection: return true
         case .idle, .pressing: return selection == nil
@@ -936,9 +948,9 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     }
 
     private func drawMagnifier() {
-        let boxSize: CGFloat = 112
+        let boxSize: CGFloat = 168
         let sourceSize: CGFloat = 14
-        let infoHeight: CGFloat = 40
+        let infoHeight: CGFloat = 88
         let offset: CGFloat = 20
 
         var origin = CGPoint(x: mouseLocation.x + offset, y: mouseLocation.y - offset - boxSize - infoHeight)
@@ -979,10 +991,55 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         ]
         let x = Int((mouseLocation.x * pixelScale).rounded(.down))
         let y = Int(((bounds.height - mouseLocation.y) * pixelScale).rounded(.down))
-        "(\(x), \(y))".draw(at: CGPoint(x: info.minX + 8, y: info.minY + 22), withAttributes: attrs)
+        "(\(x), \(y))".draw(at: CGPoint(x: info.minX + 8, y: info.minY + 70), withAttributes: attrs)
         if let rgb = pixelColor(at: mouseLocation) {
-            "RGB(\(rgb.0), \(rgb.1), \(rgb.2))".draw(at: CGPoint(x: info.minX + 8, y: info.minY + 6), withAttributes: attrs)
+            "RGB(\(rgb.0), \(rgb.1), \(rgb.2))".draw(at: CGPoint(x: info.minX + 8, y: info.minY + 54), withAttributes: attrs)
+            String(format: "#%02X%02X%02X", rgb.0, rgb.1, rgb.2).draw(at: CGPoint(x: info.minX + 8, y: info.minY + 38), withAttributes: attrs)
         }
+        let copied = colorCopiedAt.map { Date().timeIntervalSince($0) < 1.2 } ?? false
+        let shortcut = selection == nil ? "⌘C" : "⌘⌥C"
+        (copied && copiedColorFormat == .hex ? L("HEX copied!", "HEX 已复制！") : L("\(shortcut) Copy HEX", "\(shortcut) 复制 HEX")).draw(at: CGPoint(x: info.minX + 8, y: info.minY + 22), withAttributes: attrs)
+        (copied && copiedColorFormat == .rgb ? L("RGB copied!", "RGB 已复制！") : L("⌘⇧C Copy RGB", "⌘⇧C 复制 RGB")).draw(at: CGPoint(x: info.minX + 8, y: info.minY + 6), withAttributes: attrs)
+    }
+
+    enum ColorCopyFormat { case hex, rgb }
+
+    static func colorCopyFormat(for event: NSEvent) -> ColorCopyFormat? {
+        guard event.keyCode == UInt16(kVK_ANSI_C) else { return nil }
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if modifiers == [.command, .shift] { return .rgb }
+        if modifiers == [.command, .option] { return .hex }
+        return nil
+    }
+
+    static func matchesCopyColorShortcut(_ event: NSEvent) -> Bool {
+        colorCopyFormat(for: event) != nil
+    }
+
+    func copyCurrentContent(to pasteboard: NSPasteboard = .general) {
+        if selection == nil { copyColorValue(to: pasteboard) }
+        else { finish(.copy) }
+    }
+
+    /// Sample the frozen desktop, so selection dimming and annotations do not affect the color.
+    @discardableResult
+    func copyColorValue(format: ColorCopyFormat = .hex, to pasteboard: NSPasteboard = .general) -> String? {
+        guard mouseInside, let rgb = pixelColor(at: mouseLocation) else { return nil }
+        let value = format == .hex ? String(format: "#%02X%02X%02X", rgb.0, rgb.1, rgb.2) : "rgb(\(rgb.0), \(rgb.1), \(rgb.2))"
+        pasteboard.clearContents()
+        pasteboard.setString(value, forType: .string)
+        let timestamp = Date()
+        colorCopiedAt = timestamp
+        copiedColorFormat = format
+        needsDisplay = true
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(1200))
+            guard let self, self.colorCopiedAt == timestamp else { return }
+            self.colorCopiedAt = nil
+            self.copiedColorFormat = nil
+            self.needsDisplay = true
+        }
+        return value
     }
 
     private func drawScreenRegion(_ source: CGRect, into destination: CGRect) {
@@ -1544,8 +1601,10 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             cancel()
         case kVK_Return, kVK_ANSI_KeypadEnter:
             finish(.copy)
+        case kVK_ANSI_C where Self.matchesCopyColorShortcut(event):
+            if let format = Self.colorCopyFormat(for: event) { copyColorValue(format: format) }
         case kVK_ANSI_C where command:
-            finish(.copy)
+            copyCurrentContent()
         case kVK_ANSI_E where AppChannel.matchesEditImageShortcut(event):
             editImage()
         case kVK_ANSI_S where command:
