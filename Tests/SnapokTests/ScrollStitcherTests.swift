@@ -100,6 +100,43 @@ struct ScrollStitcherTests {
         _ = capped.add(page.frame(at: 180))
         precondition(capped.height <= 400 && capped.add(page.frame(at: 260)) == .full)
 
-        print("Passed scroll stitching checks: fixed bars, uneven steps, repeats, back-scroll, jumps, noise, blank stretches, size limit")
+        // A fixed sidebar beside the scrolling content (a chat list, a navigation pane): matched on the
+        // content only, and cropped off the result.
+        let sidebarWidth = 30, wide = width + sidebarWidth, viewport = 240
+        let sidebar = (0..<viewport).map { y -> [UInt8] in
+            (0..<sidebarWidth).flatMap { x -> [UInt8] in let v = UInt8((x * 7 + y * 13) % 200 + 20); return [v, v, v, 255] }
+        }
+        let content = (0..<800).map { pageRow($0) }
+        func sideFrame(_ scroll: Int) -> ScrollFrame {
+            ScrollFrame(width: wide, height: viewport, pixels: (0..<viewport).flatMap { sidebar[$0] + content[scroll + $0] })
+        }
+        var side = ScrollStitcher(first: sideFrame(0))
+        for scroll in [30, 85, 150, 230, 320, 400] {
+            if case .grew = side.add(sideFrame(scroll)) {} else { fatalError("sidebar step \(scroll) did not line up") }
+        }
+        let sideImage = side.makeImage()!
+        precondition(sideImage.height == 400 + viewport)
+        precondition(sideImage.width <= width && sideImage.width >= width - 20, "sidebar cropped, content kept (\(sideImage.width))")
+        let sidePixels = ScrollFrame(image: sideImage)!.pixels, cut = width - sideImage.width
+        precondition(sidePixels == (0..<(400 + viewport)).flatMap { Array(content[$0][(cut * 4)...]) })
+
+        // An overlay scroll bar knob moving down the right edge while the content scrolls.
+        let barWidth = 400
+        let barPage = (0..<1200).map { y in (0..<3).flatMap { _ in pageRow(y) } + [UInt8](repeating: 255, count: (barWidth - 3 * width) * 4) }
+        func barFrame(_ scroll: Int) -> ScrollFrame {
+            let knob = scroll * viewport / 1200
+            return ScrollFrame(width: barWidth, height: viewport, pixels: (0..<viewport).flatMap { row -> [UInt8] in
+                var line = barPage[scroll + row]
+                if row >= knob && row < knob + 50 { for x in (barWidth - 12)..<(barWidth - 4) { line[x * 4] = 90; line[x * 4 + 1] = 90; line[x * 4 + 2] = 90 } }
+                return line
+            })
+        }
+        var knob = ScrollStitcher(first: barFrame(0))
+        for scroll in stride(from: 40, through: 960, by: 40) {
+            if case .grew = knob.add(barFrame(scroll)) {} else { fatalError("scroll bar step \(scroll) did not line up") }
+        }
+        precondition(knob.height == 960 + viewport)
+
+        print("Passed scroll stitching checks: fixed bars, uneven steps, repeats, back-scroll, jumps, noise, blank stretches, size limit, sidebars, scroll bars")
     }
 }

@@ -1,8 +1,58 @@
 import AppKit
 @preconcurrency import ScreenCaptureKit
 
-/// Captures the selected area repeatedly and stitches the frames, off the main thread.
-/// Snapok's own windows (the frame and the control panel) are excluded from every capture.
+/// Receives the capture stream's frames on its own queue and keeps only the newest one.
+final class ScrollFrameReceiver: NSObject, SCStreamOutput, @unchecked Sendable {
+    private let lock = NSLock()
+    private var latest: ScrollFrame?
+    private var serial = 0
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        // The stream also sends "idle" frames when nothing changed; only complete frames carry pixels.
+        guard type == .screen, sampleBuffer.isValid,
+              let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+              let raw = attachments.first?[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete,
+              let buffer = sampleBuffer.imageBuffer, let frame = ScrollFrame(bgra: buffer) else { return }
+        lock.withLock {
+            latest = frame
+            serial += 1
+        }
+    }
+
+    /// The newest frame, if one arrived after `serial`.
+    func take(after serial: Int) -> (frame: ScrollFrame, serial: Int)? {
+        lock.withLock { self.serial > serial ? latest.map { ($0, self.serial) } : nil }
+    }
+}
+
+extension ScrollFrame {
+    /// Copies a BGRA pixel buffer from the capture stream into RGBA.
+    init?(bgra buffer: CVPixelBuffer) {
+        guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_32BGRA,
+              CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
+        let stride = CVPixelBufferGetBytesPerRow(buffer)
+        guard width > 0, height > 0, let base = CVPixelBufferGetBaseAddress(buffer)?.assumingMemoryBound(to: UInt8.self) else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        pixels.withUnsafeMutableBufferPointer { out in
+            for y in 0..<height {
+                let row = base + y * stride
+                for x in 0..<width {
+                    let i = (y * width + x) * 4, j = x * 4
+                    out[i] = row[j + 2]
+                    out[i + 1] = row[j + 1]
+                    out[i + 2] = row[j]
+                    out[i + 3] = 255
+                }
+            }
+        }
+        self.init(width: width, height: height, pixels: pixels)
+    }
+}
+
+/// Streams the selected area and stitches its frames, off the main thread.
+/// Snapok's own windows (the frame and the control panel) are excluded from the stream.
 actor ScrollCaptureEngine {
     struct Update: Sendable {
         let step: ScrollStitcher.Step
@@ -14,9 +64,12 @@ actor ScrollCaptureEngine {
     private let displayID: CGDirectDisplayID
     private let sourceRect: CGRect
     private let pixelSize: CGSize
-    private var filter: SCContentFilter?
-    private var configuration: SCStreamConfiguration?
+    private let receiver = ScrollFrameReceiver()
+    private let queue = DispatchQueue(label: "app.snapok.scrolling-capture")
+    private var stream: SCStream?
     private var stitcher: ScrollStitcher?
+    private var seen = 0
+    private var counts: [String: Int] = [:]
 
     /// `sourceRect` is in points, relative to the display's top-left corner.
     init(displayID: CGDirectDisplayID, sourceRect: CGRect, scale: CGFloat) {
@@ -25,42 +78,61 @@ actor ScrollCaptureEngine {
         pixelSize = CGSize(width: (sourceRect.width * scale).rounded(), height: (sourceRect.height * scale).rounded())
     }
 
-    func prepare() async throws {
+    func start() async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
             throw UpdateError(L("The display for this capture is no longer available.", "截图所在的显示器已不可用。"))
         }
         let ownPID = ProcessInfo.processInfo.processIdentifier
-        let own = content.applications.filter { $0.processID == ownPID }
-        filter = SCContentFilter(display: display, excludingApplications: own, exceptingWindows: [])
+        let filter = SCContentFilter(display: display, excludingApplications: content.applications.filter { $0.processID == ownPID },
+                                     exceptingWindows: [])
         let configuration = SCStreamConfiguration()
         configuration.sourceRect = sourceRect
         configuration.width = Int(pixelSize.width)
         configuration.height = Int(pixelSize.height)
-        configuration.showsCursor = false
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.colorSpaceName = CGColorSpace.sRGB
-        self.configuration = configuration
+        configuration.showsCursor = false
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+        configuration.queueDepth = 4
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
+        try stream.addStreamOutput(receiver, type: .screen, sampleHandlerQueue: queue)
+        try await stream.startCapture()
+        self.stream = stream
     }
 
-    func capture(expectedOffset: Int?) async -> Update? {
-        guard let filter, let configuration,
-              let image = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration),
-              let frame = ScrollFrame(image: image) else { return nil }
+    func stop() async {
+        try? await stream?.stopCapture()
+        stream = nil
+    }
+
+    /// Stitches the newest frame, if a new one arrived; `expectedOffset` is the distance just scrolled automatically.
+    func process(expectedOffset: Int?) -> Update? {
+        guard let (frame, serial) = receiver.take(after: seen) else { return nil }
+        seen = serial
         guard var stitcher else {
             stitcher = ScrollStitcher(first: frame)
-            return Update(step: .grew(frame.height), height: frame.height, preview: image)
+            return Update(step: .grew(frame.height), height: frame.height, preview: stitcher?.makeImage(bottomRows: frame.height))
         }
         let step = stitcher.add(frame, expectedOffset: expectedOffset)
         self.stitcher = stitcher
         let grew: Bool
         switch step {
-        case .grew(let rows), .estimated(let rows): grew = rows != 0
-        case .unchanged, .lostTrack, .full: grew = false
+        case .grew(let rows): grew = rows != 0; counts["grew", default: 0] += 1
+        case .estimated(let rows): grew = rows != 0; counts["estimated", default: 0] += 1
+        case .unchanged: grew = false; counts["unchanged", default: 0] += 1
+        case .lostTrack: grew = false; counts["lost", default: 0] += 1
+        case .full: grew = false; counts["full", default: 0] += 1
         }
         return Update(step: step, height: stitcher.height, preview: grew ? stitcher.makeImage(bottomRows: frame.height * 3) : nil)
     }
 
     func result() -> CGImage? { stitcher?.makeImage() }
+
+    /// Frame size and step counts, for the log.
+    func summary() -> String {
+        "\(Int(pixelSize.width))x\(Int(pixelSize.height)) px, frames \(seen), steps \(counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")), height \(stitcher?.height ?? 0)"
+    }
 }
 
 /// A scrolling capture of one area: a frame marks it, a small panel shows the stitched result so far, and the
@@ -126,7 +198,7 @@ final class ScrollingCaptureSession {
 
     private func run() async {
         do {
-            try await engine.prepare()
+            try await engine.start()
         } catch {
             log("scrolling capture failed to start", error: error)
             panel.status = error.localizedDescription
@@ -135,12 +207,13 @@ final class ScrollingCaptureSession {
         while !Task.isCancelled {
             var expected: Int?
             if automatic {
+                // Let the app finish its scroll animation, then take the frame it settled on.
                 expected = scrollOnce()
-                try? await Task.sleep(for: .milliseconds(350))
+                try? await Task.sleep(for: .milliseconds(300))
             } else {
-                try? await Task.sleep(for: .milliseconds(90))
+                try? await Task.sleep(for: .milliseconds(30))
             }
-            guard !Task.isCancelled, let update = await engine.capture(expectedOffset: expected) else { continue }
+            guard !Task.isCancelled, let update = await engine.process(expectedOffset: expected) else { continue }
             apply(update)
         }
     }
@@ -166,8 +239,10 @@ final class ScrollingCaptureSession {
             // Nothing moves any more (the end of the page), or only blank space does.
             stopAutomatic()
             panel.status = L("Reached the end · \(points) pt", "已滚动到底 · \(points) pt")
-        } else if case .lostTrack = update.step, !automatic {
-            panel.status = L("Scroll more slowly · \(points) pt", "请滚动得慢一些 · \(points) pt")
+        } else if case .lostTrack = update.step {
+            // Frames are compared with the last one that lined up, so scrolling back up to it recovers.
+            panel.status = L("Lost the position. Scroll back up a little, then continue more slowly · \(points) pt",
+                             "跟丢了位置，请往回滚一点，再慢一些往下滚 · \(points) pt")
         } else {
             panel.status = automatic
                 ? L("Scrolling… · \(points) pt", "正在自动滚动… · \(points) pt")
@@ -223,7 +298,9 @@ final class ScrollingCaptureSession {
         loop = nil
         let scale = screen.backingScaleFactor
         Task {
+            await engine.stop()
             let image = await engine.result()
+            log("scrolling capture finished: \(await engine.summary()), automatic=\(usedAutomatic)")
             close()
             guard let image else { onCancel?(); return }
             onFinish?(NSImage(cgImage: image, size: CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)),
@@ -236,6 +313,10 @@ final class ScrollingCaptureSession {
         loop = nil
         close()
         onCancel?()
+        Task { [engine] in
+            await engine.stop()
+            log("scrolling capture cancelled: \(await engine.summary())")
+        }
     }
 
     private func close() {

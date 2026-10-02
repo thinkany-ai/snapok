@@ -75,11 +75,11 @@ Press **Control + Command + A** to capture (**Shift + Option + A** in Snapok Dev
 
 Select the area to capture, for example the content of a web page or a chat, then click **Scrolling Capture** in the toolbar. A dashed frame marks the area and a panel beside it shows the image as it grows:
 
-- Scroll down inside the frame with the trackpad or mouse. Scrolling back up is ignored; if you scroll too fast for consecutive captures to overlap, the panel asks you to scroll more slowly.
+- Scroll down inside the frame with the trackpad or mouse. Scrolling back up is ignored. If you scroll too fast for consecutive frames to overlap, the panel says it lost the position: scroll back up a little until it continues.
 - Or click **Scroll Automatically** (requires Accessibility). Snapok scrolls about half the frame at a time and stops at the end of the content.
 - Press **Done** (`Return`) to open the result in the image editor, where it is also saved to the library, or **Cancel** (`Esc`).
 
-Rows that stay put while the rest scrolls, such as a toolbar or a message box, are recognized as fixed and appear once, at the top or bottom. Captures stop at 30,000 pixels. Content that changes while you scroll (animations, videos, lazy-loading placeholders) can break the alignment; scroll past it slowly or capture it separately.
+Rows that stay put while the rest scrolls, such as a toolbar or a message box, are recognized as fixed and appear once, at the top or bottom. Columns that never change, such as a chat list or sidebar inside the selection, are ignored and cropped off the result. Captures stop at 30,000 pixels. Content that changes while you scroll (animations, videos, lazy-loading placeholders) can break the alignment; scroll past it slowly or capture it separately.
 
 ### Image editor
 
