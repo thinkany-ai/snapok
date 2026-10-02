@@ -34,8 +34,6 @@ server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
 pathlib.Path(sys.argv[1]).write_text(str(server.server_port))
 server.serve_forever()
 PY
-python3 "$TEST_DIR/mock.py" "$TEST_DIR/port" &
-MOCK_PID=$!
 sed '/^@main$/d' "$ROOT_DIR/Sources/Snapok/SnapokApp.swift" > "$TEST_DIR/AppSource.swift"
 SOURCES=()
 for file in "$ROOT_DIR"/Sources/Snapok/*.swift; do
@@ -43,4 +41,21 @@ for file in "$ROOT_DIR"/Sources/Snapok/*.swift; do
 done
 swiftc -swift-version 6 -target "$(uname -m)-apple-macos14.0" -parse-as-library \
   "${SOURCES[@]}" "$TEST_DIR/AppSource.swift" "$ROOT_DIR/Tests/SnapokTests/ImageTranslationIntegrationTests.swift" -o "$TEST_DIR/translation-integration"
+# Start after compilation and wait for readiness rather than assuming Python is already listening.
+python3 -u "$TEST_DIR/mock.py" "$TEST_DIR/port" > "$TEST_DIR/mock.log" 2>&1 &
+MOCK_PID=$!
+for attempt in {1..300}; do
+  [[ ! -s "$TEST_DIR/port" ]] || break
+  if ! kill -0 "$MOCK_PID" 2>/dev/null; then
+    cat "$TEST_DIR/mock.log"
+    echo "Translation mock server exited before becoming ready" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+if [[ ! -s "$TEST_DIR/port" ]]; then
+  cat "$TEST_DIR/mock.log"
+  echo "Translation mock server did not become ready within 30 seconds" >&2
+  exit 1
+fi
 "$TEST_DIR/translation-integration" "$(cat "$TEST_DIR/port")"
