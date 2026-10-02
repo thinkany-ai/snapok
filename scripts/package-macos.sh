@@ -42,6 +42,9 @@ PY
 }
 
 SIGN_IDENTITY=- ./scripts/build-app.sh release --universal
+# Debug symbols for crash reports, taken before signing (the debug map points at .build object files).
+rm -rf "$ARCHIVES/$NAME.dSYM"
+dsymutil "$APP/Contents/MacOS/Snapok" -o "$ARCHIVES/$NAME.dSYM"
 if [[ "$MODE" == --signed ]]; then
   codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP"
   codesign --verify --deep --strict "$APP"

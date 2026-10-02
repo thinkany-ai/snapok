@@ -71,6 +71,7 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         }
         showLibrary()
         Updater.shared.start()
+        Telemetry.start()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -166,6 +167,7 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         HotKeyCenter.shared.stop()
+        Telemetry.flush()
     }
 
     private func configureMenuBar() {
@@ -317,6 +319,7 @@ final class ScreenshotController {
 
         let original = ScreenCapture.crop(image: image, to: result.globalRect)
         let screen = NSScreen.screens.first { $0.frame.intersects(result.globalRect) }
+        Telemetry.capture("capture_finished", ["action": "\(mode)", "annotations": result.annotations.count])
         switch mode {
         case .editImage:
             closeWindows()

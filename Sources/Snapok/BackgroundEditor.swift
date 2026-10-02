@@ -418,6 +418,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     }
 
     @objc private func recognizeText() {
+        Telemetry.capture("ai_used", ["feature": "ocr"])
         guard let image = annotatedSource else { return }
         AIResultWindowController.show(title: L("Recognized Text", "识别出的文字"), near: window) {
             let text = await TextScanner.scan(image).text
@@ -426,6 +427,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     }
 
     @objc private func redactSensitive() {
+        Telemetry.capture("ai_used", ["feature": "redact"])
         feedback.stringValue = L("Finding sensitive information…", "正在查找敏感信息…")
         let source = preview.source
         let size = preview.sourceImage.size
@@ -445,6 +447,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     }
 
     @objc private func translateText() {
+        Telemetry.capture("ai_used", ["feature": "translate"])
         guard let image = annotatedSource else { return }
         AIResultWindowController.show(title: L("Translate to \(AppSettings.translateTarget)", "翻译成\(AppSettings.translateTarget)"), near: window) {
             try await AIAssistant.translate(image)
@@ -452,6 +455,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     }
 
     @objc private func askQuestion() {
+        Telemetry.capture("ai_used", ["feature": "ask"])
         guard let window, let image = annotatedSource else { return }
         let alert = NSAlert()
         alert.messageText = L("What would you like to ask about this screenshot?", "关于这张截图，你想问什么？")

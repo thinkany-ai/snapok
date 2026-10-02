@@ -200,6 +200,12 @@ Versioned packages are uploaded first and `latest.json` last, and the feed never
 
 The app checks its channel's manifest 10 seconds after launch and every 6 hours (Settings → About → Updates, or *Check for Updates…* in the app and menu bar menus). It installs only after the ZIP matches the manifest's SHA-256 and the new app has the same bundle ID and version and is signed by the same Developer ID team, then replaces itself and relaunches. Local and ad-hoc builds are not Developer ID signed and never update.
 
+## Privacy and telemetry
+
+Builds published by this repository send anonymous usage events to PostHog (launches, finished captures and their action, AI features used, installed updates) and crash reports to Sentry. Each install has a random ID; nothing includes screenshots, recognized text, file names, prompts, or keys, and PostHog events create no person profiles. Turn it off in Settings → About → Privacy.
+
+The keys are not in the source. `scripts/build-app.sh` writes `POSTHOG_PROJECT_KEY` (and optionally `POSTHOG_HOST`) and `SENTRY_DSN` from the environment into Info.plist, and only this repository's Actions builds set them from secrets, so builds from source and forks never report. Reporting also requires a Developer ID signature. An optional `SENTRY_AUTH_TOKEN` secret uploads debug symbols so crash reports show source lines.
+
 CI uploads through the `snapok-cdn-upload` Worker (`cdn/`), which holds the bucket binding, using the `CDN_UPLOAD_TOKEN` secret, so the repository has no Cloudflare credentials. Without that secret, packaging still succeeds and the feed is left unchanged. To publish by hand with a local `wrangler` login: `CHANNEL=dev ./scripts/publish-cdn.sh dist/archives/<name>.dmg dist/archives/<name>.zip`.
 
 ## Contributing

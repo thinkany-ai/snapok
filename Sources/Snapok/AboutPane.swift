@@ -13,6 +13,7 @@ final class AboutPane: SectionedPageView {
         super.init(title: L("About", "关于"))
         add(header())
         addSection(L("Updates", "更新"), rows: [UpdateStatusRow(), UpdateAutomaticRow()])
+        addSection(L("Privacy", "隐私"), rows: [TelemetryRow()])
         addSection(L("Links", "链接"), rows: [
             linkRow(L("Website", "官网"), AppLinks.website, symbol: "globe", tint: .systemBlue),
             linkRow(L("Source Code", "源代码"), AppLinks.repository, symbol: "chevron.left.forwardslash.chevron.right", tint: .darkGray),

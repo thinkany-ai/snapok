@@ -62,6 +62,9 @@ final class Updater {
 
     var currentDisplayVersion: String { Self.displayVersion(currentVersion, build: currentBuild) }
 
+    /// True only for builds signed with a Developer ID certificate.
+    var isOfficialBuild: Bool { teamIdentifier != nil }
+
     // MARK: - Checking
 
     /// Checks shortly after launch, then every six hours, while automatic checks are on.
@@ -190,6 +193,8 @@ final class Updater {
             }.value
             try FileManager.default.replaceItemAt(target, withItemAt: newApp)
             log("installed update \(release.version)+\(release.build); relaunching")
+            Telemetry.capture("update_installed", ["from": "\(currentVersion)+\(currentBuild)", "to": "\(release.version)+\(release.build)"])
+            Telemetry.flush()
             relaunch(target)
         } catch {
             log("update failed: \(error.localizedDescription)")

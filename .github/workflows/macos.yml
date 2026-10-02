@@ -103,6 +103,9 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           BUILD_NUMBER: ${{ github.run_number }}
           INPUT_CHANNEL: ${{ inputs.channel }}
+          # Only this repository's builds carry telemetry keys; forks and builds from source report nothing.
+          POSTHOG_PROJECT_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -117,6 +120,24 @@ jobs:
           else
             ./scripts/package-macos.sh --unsigned
           fi
+
+      # Symbolicates Sentry crash reports; skipped until SENTRY_AUTH_TOKEN is configured.
+      - name: Upload debug symbols to Sentry
+        if: github.event_name == 'push' && steps.signing.outputs.ready == 'true'
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SENTRY_AUTH_TOKEN" ]]; then
+            echo '::notice::SENTRY_AUTH_TOKEN is not configured; crash reports will not be symbolicated.'
+            exit 0
+          fi
+          # The DSN ends in the project ID; look up the org and project slugs sentry-cli needs.
+          PROJECT_ID="${SENTRY_DSN##*/}"
+          read -r ORG PROJECT < <(curl -fsS -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" https://us.sentry.io/api/0/projects/ |
+            python3 -c "import json,sys; p=[p for p in json.load(sys.stdin) if p['id']=='$PROJECT_ID'][0]; print(p['organization']['slug'], p['slug'])")
+          npx -y @sentry/cli debug-files upload --org "$ORG" --project "$PROJECT" --include-sources dist/archives/*.dSYM
 
       # Signed pushes go to https://cdn.snapok.app, which the in-app updater reads:
       # dev branch → dev/latest.json (Snapok Dev), v* tags → latest.json (Snapok).

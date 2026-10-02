@@ -42,6 +42,10 @@ PLIST="$APP_DIR/Contents/Info.plist"
   -c "Set :CFBundleDisplayName $APP_NAME" -c "Set :SnapokChannel $CHANNEL" "$PLIST"
 cp -R "$BIN_DIR/Snapok_Snapok.bundle" "$APP_DIR/Contents/Resources/"
 chmod +x "$APP_DIR/Contents/MacOS/Snapok"
+# Telemetry keys exist only in the project's own CI builds; builds from source leave them out and never report.
+for pair in "SnapokPostHogKey:${POSTHOG_PROJECT_KEY:-}" "SnapokPostHogHost:${POSTHOG_HOST:-}" "SnapokSentryDSN:${SENTRY_DSN:-}"; do
+  [[ -n "${pair#*:}" ]] && /usr/libexec/PlistBuddy -c "Add :${pair%%:*} string ${pair#*:}" "$PLIST"
+done
 if [[ -n "${BUILD_NUMBER:-}" ]]; then
   [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || { echo "BUILD_NUMBER must be numeric" >&2; exit 1; }
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_DIR/Contents/Info.plist"
