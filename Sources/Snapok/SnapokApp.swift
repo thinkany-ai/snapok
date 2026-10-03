@@ -479,6 +479,33 @@ enum ToolKind: String, CaseIterable, Codable {
     case mosaic
     case text
 
+    var shortcut: String {
+        switch self {
+        case .rect: return "R"
+        case .oval: return "O"
+        case .arrow: return "A"
+        case .pen: return "P"
+        case .mosaic: return "M"
+        case .text: return "T"
+        }
+    }
+
+    var shortcutKeyCode: UInt16 {
+        switch self {
+        case .rect: return UInt16(kVK_ANSI_R)
+        case .oval: return UInt16(kVK_ANSI_O)
+        case .arrow: return UInt16(kVK_ANSI_A)
+        case .pen: return UInt16(kVK_ANSI_P)
+        case .mosaic: return UInt16(kVK_ANSI_M)
+        case .text: return UInt16(kVK_ANSI_T)
+        }
+    }
+
+    static func matchingShortcut(_ event: NSEvent) -> ToolKind? {
+        guard event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return nil }
+        return allCases.first { $0.shortcutKeyCode == event.keyCode }
+    }
+
     var symbol: String {
         switch self {
         case .rect: return "square"
@@ -568,6 +595,12 @@ final class CaptureWindow: NSWindow {
     func editImage() { (contentView as? CaptureView)?.editImage() }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if (contentView as? CaptureView)?.isEditingText == true {
+            return super.performKeyEquivalent(with: event)
+        }
+        if (contentView as? CaptureView)?.handleAnnotationShortcut(event) == true {
+            return true
+        }
         if let format = CaptureView.colorCopyFormat(for: event) {
             (contentView as? CaptureView)?.copyColorValue(format: format)
             return true
@@ -752,6 +785,8 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     private var copiedColorFormat: ColorCopyFormat?
 
     private var selectedTool: ToolKind?
+    private var toolFocusHighlighted = false
+    private var toolFocusGeneration = 0
     private var selectedColor: NSColor = Style.colors[0]
     private var sizeLevel = 1
     private var annotations: [Annotation] = []
@@ -759,6 +794,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     private var dragState: DragState = .idle
     private var selectedAnnotationIndex: Int?
     private var activeTextField: NSTextField?
+    var isEditingText: Bool { activeTextField != nil }
     private var editingTextIndex: Int?
 
     private var toolbarButtons: [(action: ToolbarAction, rect: CGRect)] = []
@@ -886,7 +922,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     private func drawSelectionFrame(_ rect: CGRect) {
         Style.accent.setStroke()
         let path = NSBezierPath(rect: rect.insetBy(dx: -0.5, dy: -0.5))
-        path.lineWidth = 1
+        path.lineWidth = toolFocusHighlighted ? 3 : 1
         path.stroke()
 
         Style.accent.setFill()
@@ -901,6 +937,15 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             text += AXIsProcessTrusted()
                 ? L("  · Scroll to switch regions · ⌥ Whole window", "  · 滚轮切换区域 · ⌥ 整窗")
                 : L("  · Window snapping · Enable component snapping in Settings → General", "  · 整窗吸附 · 设置 → 通用中启用组件吸附")
+        } else if let tool = selectedTool {
+            text += "  · \(tool.title) (\(tool.shortcut))"
+            if tool == .text {
+                text += activeTextField == nil ? L(" · Click to type", " · 点击输入") : L(" · Enter / Esc to finish typing", " · Enter / Esc 结束输入")
+            } else {
+                text += L(" · Drag to draw", " · 拖动绘制")
+            }
+        } else {
+            text += L("  · Select / Move (V)", "  · 选择 / 移动 (V)")
         }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
@@ -1120,8 +1165,9 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         if selection.minY - needed >= bounds.minY + 4 {
             barY = selection.minY - gap - barHeight
             optionsBelowBar = true
-        } else if selection.maxY + needed <= bounds.maxY - 4 {
-            barY = selection.maxY + gap
+        } else if selection.maxY + needed + 26 <= bounds.maxY - 4 {
+            // Leave room for the selection dimensions and current mode label.
+            barY = selection.maxY + gap + 26
             optionsBelowBar = false
         } else {
             barY = selection.minY + gap
@@ -1286,6 +1332,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         case .tool(let tool):
             selectedTool = selectedTool == tool ? nil : tool
             selectedAnnotationIndex = nil
+            highlightToolFocus()
         case .undo:
             undo()
         case .scroll:
@@ -1596,6 +1643,8 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         let command = event.modifierFlags.contains(.command)
         let step: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
 
+        if handleAnnotationShortcut(event) { return }
+
         switch Int(event.keyCode) {
         case kVK_Escape:
             cancel()
@@ -1611,6 +1660,10 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             finish(.save)
         case kVK_ANSI_Z where command:
             undo()
+        case kVK_ANSI_T where event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command:
+            finish(.pin)
+        case kVK_ANSI_L where event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command:
+            finish(.scroll)
         case kVK_Delete, kVK_ForwardDelete:
             deleteSelectedAnnotation()
         case kVK_LeftArrow:
@@ -1625,6 +1678,46 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             super.keyDown(with: event)
         }
         needsDisplay = true
+    }
+
+    @discardableResult
+    func handleAnnotationShortcut(_ event: NSEvent) -> Bool {
+        guard selection != nil, activeTextField == nil,
+              case .idle = dragState,
+              event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return false }
+        if let tool = ToolKind.matchingShortcut(event) {
+            selectedTool = tool
+            selectedAnnotationIndex = nil
+        } else {
+            switch Int(event.keyCode) {
+            case kVK_ANSI_V:
+                selectedTool = nil
+                selectedAnnotationIndex = nil
+            case kVK_ANSI_1: perform(.size(0))
+            case kVK_ANSI_2: perform(.size(1))
+            case kVK_ANSI_3: perform(.size(2))
+            case kVK_ANSI_LeftBracket: perform(.size(max(0, sizeLevel - 1)))
+            case kVK_ANSI_RightBracket: perform(.size(min(Style.sizeLevels - 1, sizeLevel + 1)))
+            default: return false
+            }
+        }
+        updateCursor()
+        highlightToolFocus()
+        needsDisplay = true
+        return true
+    }
+
+    private func highlightToolFocus() {
+        toolFocusGeneration += 1
+        let generation = toolFocusGeneration
+        toolFocusHighlighted = true
+        needsDisplay = true
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard let self, self.toolFocusGeneration == generation else { return }
+            self.toolFocusHighlighted = false
+            self.needsDisplay = true
+        }
     }
 
     // MARK: Annotations
@@ -1741,6 +1834,16 @@ final class CaptureView: NSView, NSTextFieldDelegate {
 
     func controlTextDidEndEditing(_ obj: Notification) {
         commitActiveTextField()
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard control === activeTextField, !textView.hasMarkedText() else { return false }
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) || commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            commitActiveTextField()
+            updateCursor()
+            return true
+        }
+        return false
     }
 
     private func commitActiveTextField() {
@@ -1935,14 +2038,14 @@ enum ToolbarAction: Equatable {
 
     var title: String? {
         switch self {
-        case .tool(let tool): return tool.title
-        case .scroll: return L("Scrolling Capture", "长截图")
+        case .tool(let tool): return "\(tool.title) (\(tool.shortcut))"
+        case .scroll: return L("Scrolling Capture (⌘L)", "长截图（⌘L）")
         case .editImage: return L("Edit Image (\(AppChannel.editImageHotKey.symbol))", "编辑图片（\(AppChannel.editImageHotKey.symbol)）")
-        case .undo: return L("Undo", "撤销")
-        case .pin: return L("Pin to Screen", "钉在屏幕上")
-        case .save: return L("Save", "保存")
-        case .cancel: return L("Cancel Capture", "退出截图")
-        case .done: return L("Done", "完成")
+        case .undo: return L("Undo (⌘Z)", "撤销（⌘Z）")
+        case .pin: return L("Pin to Screen (⌘T)", "钉在屏幕上（⌘T）")
+        case .save: return L("Save (⌘S)", "保存（⌘S）")
+        case .cancel: return L("Cancel Capture (Esc)", "退出截图（Esc）")
+        case .done: return L("Done (Enter / ⌘C)", "完成（Enter / ⌘C）")
         case .size, .color: return nil
         }
     }

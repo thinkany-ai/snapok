@@ -240,6 +240,18 @@ final class BackgroundPreview: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+            if let tool = ToolKind.matchingShortcut(event) { chooseTool(tool); return }
+            switch Int(event.keyCode) {
+            case kVK_ANSI_V: chooseTool(nil); return
+            case kVK_ANSI_1: sizeLevel = 0; applyStyle(); return
+            case kVK_ANSI_2: sizeLevel = 1; applyStyle(); return
+            case kVK_ANSI_3: sizeLevel = 2; applyStyle(); return
+            case kVK_ANSI_LeftBracket: sizeLevel = max(0, sizeLevel - 1); applyStyle(); return
+            case kVK_ANSI_RightBracket: sizeLevel = min(Style.sizeLevels - 1, sizeLevel + 1); applyStyle(); return
+            default: break
+            }
+        }
         if event.modifierFlags.contains(.command) {
             switch Int(event.keyCode) {
             case kVK_ANSI_Equal: zoomBy(1.25)
@@ -248,6 +260,7 @@ final class BackgroundPreview: NSView {
             case kVK_ANSI_Z: undoEdit()
             case kVK_ANSI_C: onCommand?(.done)
             case kVK_ANSI_S: onCommand?(.save)
+            case kVK_ANSI_T: onCommand?(.pin)
             default: super.keyDown(with: event)
             }
         } else if event.keyCode == UInt16(kVK_Delete) || event.keyCode == UInt16(kVK_ForwardDelete) { deleteSelected() }

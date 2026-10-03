@@ -63,7 +63,12 @@ Press **Control + Command + A** to capture (**Shift + Option + A** in Snapok Dev
 | Move / resize selection | Drag inside / drag edges or handles |
 | Nudge selection | Arrow keys; `Shift` for 10-point steps |
 | Edit image | `⌘E` (release) / `⌥E` (development), after selecting a capture |
-| Scrolling capture | Select the area, then click the scrolling capture button in the toolbar |
+| Select / move annotations | `V` |
+| Rectangle / ellipse / arrow | `R` / `O` / `A` |
+| Pen / mosaic / text | `P` / `M` / `T` |
+| Small / medium / large stroke or text | `1` / `2` / `3`; `[` / `]` to decrease / increase |
+| Pin image | `⌘T` |
+| Scrolling capture | Select the area, then click the scrolling capture button or press `⌘L` |
 | Copy capture | `Enter`, `⌘C`, or double-click the selection |
 | Copy pixel color (HEX) | Hover over the target color before selecting a region, then press `⌘C`; `⌘⌥C` works with or without a selection |
 | Copy pixel color (RGB) | `⌘⇧C`, with or without a selection |
@@ -72,6 +77,8 @@ Press **Control + Command + A** to capture (**Shift + Option + A** in Snapok Dev
 | Delete selected annotation | `Delete` |
 | Reselect / cancel capture | Right-click / `Esc` |
 | Close image editor | `⌘W` |
+
+Tool shortcuts work after selecting a capture region and in the image editor. They do not switch tools while typing in a text field. During capture, press `Enter` or `Esc` to finish text input and return to the canvas; then tool shortcuts work again. Hover over a tool to see its shortcut.
 
 ### Scrolling capture
 

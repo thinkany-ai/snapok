@@ -65,6 +65,25 @@ struct EditorCanvasTests {
         canvas.panBy(dx: 100000, dy: -100000)
         precondition(canvas.imagePoint(from: anchor) == clampedPoint, "Panning must stop at canvas edges")
         canvas.fitToWindow()
+        func toolKey(_ code: Int, modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "",
+                isARepeat: false, keyCode: UInt16(code))!
+        }
+        for tool in ToolKind.allCases {
+            let key = toolKey(Int(tool.shortcutKeyCode))
+            canvas.keyDown(with: key)
+            precondition(canvas.selectedTool == tool, "Tool key must switch the editor to \(tool)")
+            canvas.keyDown(with: key)
+            precondition(canvas.selectedTool == tool, "Repeated tool keys must keep the tool selected")
+            precondition(ToolKind.matchingShortcut(toolKey(Int(tool.shortcutKeyCode), modifiers: .command)) == nil)
+        }
+        canvas.keyDown(with: toolKey(kVK_ANSI_3))
+        precondition(canvas.sizeLevel == 2)
+        canvas.keyDown(with: toolKey(kVK_ANSI_LeftBracket))
+        precondition(canvas.sizeLevel == 1)
+        canvas.keyDown(with: toolKey(kVK_ANSI_V))
+        precondition(canvas.selectedTool == nil)
         precondition(canvas.imagePoint(from: CGPoint(x: 360, y: 260)) == CGPoint(x: 150, y: 100))
         canvas.setZoom(2)
         let composite = BackgroundRenderer.render(source: canvas.source, background: .color(.white), layout: BackgroundLayout()) { cg in
@@ -100,6 +119,7 @@ struct EditorCanvasTests {
             let colorClipboard = NSPasteboard.withUniqueName()
             defer { colorClipboard.releaseGlobally() }
             view.mouseMoved(with: captureEvent(.mouseMoved, 100, 100))
+            precondition(!view.handleAnnotationShortcut(toolKey(kVK_ANSI_R)), "Do not switch annotation tools before selecting a region")
             precondition(view.copyColorValue(to: colorClipboard) == "#FFFFFF")
             precondition(view.copyColorValue(format: .rgb, to: colorClipboard) == "rgb(255, 255, 255)")
             precondition(colorClipboard.string(forType: .string) == "rgb(255, 255, 255)")
@@ -122,9 +142,41 @@ struct EditorCanvasTests {
             view.mouseDown(with: captureEvent(.leftMouseDown, 100, 100))
             view.mouseDragged(with: captureEvent(.leftMouseDragged, 300, 250))
             view.mouseUp(with: captureEvent(.leftMouseUp, 300, 250))
+            precondition(captureWindow.performKeyEquivalent(with: toolKey(kVK_ANSI_R)))
+            view.mouseDown(with: captureEvent(.leftMouseDown, 150, 150))
+            view.mouseDragged(with: captureEvent(.leftMouseDragged, 220, 190))
+            view.mouseUp(with: captureEvent(.leftMouseUp, 220, 190))
+            precondition(captureWindow.performKeyEquivalent(with: toolKey(kVK_ANSI_T)), "T must switch directly from rectangle to text")
+            if CommandLine.arguments.count > 1 {
+                let crop = CGRect(x: 0, y: 50, width: min(600, view.bounds.width), height: min(300, view.bounds.height - 50))
+                let rep = view.bitmapImageRepForCachingDisplay(in: crop)!
+                view.cacheDisplay(in: crop, to: rep)
+                try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1] + "-capture-mode.png"))
+            }
+            view.mouseDown(with: captureEvent(.leftMouseDown, 180, 170))
+            view.mouseUp(with: captureEvent(.leftMouseUp, 180, 170))
+            let input = view.subviews.compactMap { $0 as? NSTextField }.first!
+            precondition(captureWindow.firstResponder is NSTextView, "Clicking after T must focus the text input")
+            precondition(!view.handleAnnotationShortcut(toolKey(kVK_ANSI_R)), "Letters must remain text while input is active")
+            input.stringValue = "RTAP"
+            let fieldEditor = captureWindow.firstResponder as! NSTextView
+            precondition(!view.control(input, textView: fieldEditor, doCommandBy: #selector(NSResponder.deleteBackward(_:))))
+            precondition(view.control(input, textView: fieldEditor, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+            precondition(!view.isEditingText && captureWindow.firstResponder === view, "Enter must finish text and restore canvas focus")
+            precondition(delegate.mode == nil, "Finishing text must not finish the screenshot")
+            precondition(captureWindow.performKeyEquivalent(with: toolKey(kVK_ANSI_R)), "Rectangle shortcut must work after text input")
+            precondition(captureWindow.performKeyEquivalent(with: toolKey(kVK_ANSI_T)))
+            view.mouseDown(with: captureEvent(.leftMouseDown, 240, 200))
+            view.mouseUp(with: captureEvent(.leftMouseUp, 240, 200))
+            let emptyInput = view.subviews.compactMap { $0 as? NSTextField }.first!
+            precondition(view.control(emptyInput, textView: captureWindow.firstResponder as! NSTextView, doCommandBy: #selector(NSResponder.cancelOperation(_:))))
+            precondition(!view.isEditingText && captureWindow.firstResponder === view, "Esc must leave text input without cancelling the screenshot")
+            precondition(captureWindow.performKeyEquivalent(with: toolKey(kVK_ANSI_A)), "Arrow shortcut must work after Esc")
             view.copyCurrentContent(to: colorClipboard)
             guard case .copy? = delegate.mode else { preconditionFailure("Copy must finish the screenshot after a region is selected") }
             precondition(delegate.result?.globalRect.size == CGSize(width: 200, height: 150))
+            precondition(delegate.result?.annotations.first?.kind == .rect, "R must enable rectangle drawing during capture")
+            precondition(delegate.result?.annotations.last?.text == "RTAP", "T must create an editable text annotation after drawing a rectangle")
             precondition(AppChannel.editImageHotKey(forRelease: true).menuModifiers == .command)
             precondition(AppChannel.editImageHotKey(forRelease: false).menuModifiers == .option)
             let edit = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: AppChannel.editImageHotKey.menuModifiers, timestamp: 0,

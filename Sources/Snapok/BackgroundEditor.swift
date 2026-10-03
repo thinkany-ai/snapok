@@ -221,12 +221,12 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         let tools = NSStackView()
         tools.spacing = 6
         let select = NSButton(image: NSImage(systemSymbolName: "cursorarrow", accessibilityDescription: L("Select and move annotations", "选择和移动标注"))!, target: self, action: #selector(selectAnnotation))
-        select.toolTip = L("Select and move · Double-click to edit text · Delete to remove", "选择和移动标注 · 双击编辑文字 · Delete 删除")
+        select.toolTip = L("Select and move (V) · Double-click to edit text · Delete to remove", "选择和移动标注（V）· 双击编辑文字 · Delete 删除")
         select.bezelStyle = .rounded
         select.widthAnchor.constraint(equalToConstant: 32).isActive = true
         tools.addArrangedSubview(select)
         for (index, action) in quickActions.enumerated() {
-            let title = action == .cancel ? L("Close Editor", "关闭编辑") : action == .done ? L("Copy Image", "复制图片") : action.title ?? ""
+            let title = action == .cancel ? L("Close Editor (⌘W)", "关闭编辑（⌘W）") : action == .done ? L("Copy Image (⌘C)", "复制图片（⌘C）") : action.title ?? ""
             let item = NSButton(image: NSImage(systemSymbolName: action.symbol!, accessibilityDescription: title)!, target: self, action: #selector(quickAction(_:)))
             item.tag = index
             item.toolTip = title
@@ -241,6 +241,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         strokePicker.target = self
         strokePicker.action = #selector(changeAnnotationStyle)
         strokePicker.setAccessibilityLabel(L("Annotation stroke or text size", "标注线宽或文字大小"))
+        strokePicker.toolTip = L("1 / 2 / 3: small / medium / large · [ / ]: decrease / increase", "1 / 2 / 3：小 / 中 / 大 · [ / ]：减小 / 增大")
         annotationColor.color = preview.selectedColor
         annotationColor.target = self
         annotationColor.action = #selector(changeAnnotationStyle)
