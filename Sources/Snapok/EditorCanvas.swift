@@ -9,6 +9,13 @@ final class BackgroundPreview: NSView, NSTextFieldDelegate {
     var composition = BackgroundLayout() { didSet { viewportChanged() } }
     var annotations: [Annotation]
     var selectedTool: ToolKind?
+    var stepStyle: StepMarkerStyle = .filledCircle
+    var autoNumberRect = false
+    var usesRectStyle: Bool { selectedTool == .rect || selectedIndex.map { annotations[$0].kind == .rect } == true }
+    var usesStepStyle: Bool {
+        selectedTool == .step || (usesRectStyle && autoNumberRect)
+            || selectedIndex.map { annotations[$0].kind == .step || annotations[$0].stepNumber != nil } == true
+    }
     var selectedColor: NSColor = Style.colors[0]
     var textStyle = AnnotationTextStyle()
     var usesTextStyle: Bool { selectedTool == .text || selectedIndex.map { annotations[$0].kind == .text } == true }
@@ -175,6 +182,10 @@ final class BackgroundPreview: NSView, NSTextFieldDelegate {
             record()
             annotations[index].color = selectedColor
             annotations[index].sizeLevel = sizeLevel
+            if annotations[index].kind == .step || annotations[index].stepNumber != nil {
+                annotations[index].stepStyle = stepStyle
+                if annotations[index].kind == .step { StepMarkers.resize(&annotations[index]) }
+            }
             if annotations[index].kind == .text {
                 annotations[index].textStyle = textStyle
                 let font = annotations[index].textFont
@@ -191,16 +202,32 @@ final class BackgroundPreview: NSView, NSTextFieldDelegate {
         changed()
     }
 
+    func setNumberRect(_ enabled: Bool) {
+        autoNumberRect = enabled
+        if let index = selectedIndex, annotations[index].kind == .rect {
+            record()
+            annotations[index].stepNumber = enabled
+                ? annotations[index].stepNumber ?? String(StepMarkers.nextNumber(in: annotations)) : nil
+            annotations[index].stepStyle = stepStyle
+        }
+        changed()
+    }
+
     override func mouseDown(with event: NSEvent) {
         if activeTextField != nil { commitTextEditing(); return }
         window?.makeFirstResponder(self)
         let point = imagePoint(from: convert(event.locationInWindow, from: nil))
         guard CGRect(origin: .zero, size: sourceImage.size).contains(point) else { selectedIndex = nil; changed(); return }
         let hit = annotations.indices.reversed().first { annotations[$0].hitTest(point) }
-        if let hit, selectedTool == nil || (selectedTool == .text && annotations[hit].kind == .text) {
+        if let hit, selectedTool == nil || ((selectedTool == .text || selectedTool == .step) && annotations[hit].kind == selectedTool) {
             selectedIndex = hit
             selectedColor = annotations[hit].color
             sizeLevel = annotations[hit].sizeLevel
+            if annotations[hit].kind == .step { stepStyle = annotations[hit].stepStyle ?? .filledCircle }
+            if annotations[hit].kind == .rect {
+                autoNumberRect = annotations[hit].stepNumber != nil
+                stepStyle = annotations[hit].stepStyle ?? .filledCircle
+            }
             if annotations[hit].kind == .text { textStyle = annotations[hit].effectiveTextStyle }
             if annotations[hit].kind == .text, event.clickCount == 2 {
                 editText(at: point, index: hit)
@@ -210,6 +237,12 @@ final class BackgroundPreview: NSView, NSTextFieldDelegate {
         }
         selectedIndex = nil
         guard let tool = selectedTool else { changed(); return }
+        if tool == .step {
+            record()
+            annotations.append(StepMarkers.make(at: point, annotations: annotations, color: selectedColor, sizeLevel: sizeLevel, style: stepStyle))
+            changed()
+            return
+        }
         if tool == .text { editText(at: point, index: nil); return }
         start = point
         draft = Annotation(kind: tool, rect: CGRect(origin: point, size: .zero), points: [point, point], color: selectedColor, sizeLevel: sizeLevel)
@@ -234,7 +267,11 @@ final class BackgroundPreview: NSView, NSTextFieldDelegate {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if let draft, draft.rect.width + draft.rect.height >= 2 {
+        if var draft, draft.rect.width + draft.rect.height >= 2 {
+            if draft.kind == .rect, autoNumberRect {
+                draft.stepNumber = String(StepMarkers.nextNumber(in: annotations))
+                draft.stepStyle = stepStyle
+            }
             record(); annotations.append(draft)
         }
         draft = nil; start = nil; lastPoint = nil

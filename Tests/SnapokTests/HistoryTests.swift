@@ -45,6 +45,74 @@ struct HistoryTests {
         let rendered = store.rendered(for: store.item(item.id)!)
         precondition(rendered?.size == image.size, "rendered copy keeps point size")
 
+        // Reuse is opt-in; framing uses image pixels, preserving editable Retina originals.
+        let previousReuse = AppSettings.reuseEditorStyle
+        let previousPreferences = UserDefaults.standard.data(forKey: BackgroundPreferences.key)
+        defer {
+            AppSettings.reuseEditorStyle = previousReuse
+            if let previousPreferences { UserDefaults.standard.set(previousPreferences, forKey: BackgroundPreferences.key) }
+            else { UserDefaults.standard.removeObject(forKey: BackgroundPreferences.key) }
+        }
+        var frame = BackgroundPreferences()
+        frame.horizontalPadding = 24
+        frame.verticalPadding = 12
+        frame.cornerRadius = 0
+        frame.shadow = false
+        frame.backgroundType = 2
+        frame.backgroundColor = [0, 0, 1, 1]
+        frame.save()
+        AppSettings.reuseEditorStyle = false
+        precondition(CaptureStyle.forNewCapture(screen: nil) == nil, "Disabled reuse must leave new screenshots unframed")
+        AppSettings.reuseEditorStyle = true
+        let reuse = CaptureStyle.forNewCapture(screen: nil)!
+        let framedSize = CGSize(width: 1848, height: 264)
+        let annotated = HistoryRenderer.render(original: image, annotations: annotations)!
+        precondition(reuse.render(annotated)?.size == framedSize, "Direct exports must add pixel padding exactly once")
+        let styledItem = store.add(original: image, annotations: annotations, style: reuse)!
+        let styledOriginalBytes = try Data(contentsOf: store.fileURL(for: styledItem))
+        precondition(styledOriginalBytes == image.pngData!, "Framing must never flatten or replace the editable original")
+        precondition(styledItem.pixelSize == framedSize && styledItem.pointSize == image.size)
+        precondition(store.rendered(for: styledItem)?.size == framedSize && store.thumbnail(for: styledItem) != nil)
+        let directPixels = NSBitmapImageRep(cgImage: reuse.render(annotated)!.cgImage(forProposedRect: nil, context: nil, hints: nil)!)
+        let libraryPixels = NSBitmapImageRep(cgImage: store.rendered(for: styledItem)!.cgImage(forProposedRect: nil, context: nil, hints: nil)!)
+        let paddingColor = directPixels.colorAt(x: 0, y: 0)!
+        precondition(paddingColor.redComponent < 0.01 && paddingColor.greenComponent < 0.01 && paddingColor.blueComponent > 0.99,
+                     "The saved solid background must fill the padding")
+        for y in stride(from: 0, to: Int(framedSize.height), by: 7) {
+            for x in stride(from: 0, to: Int(framedSize.width), by: 13) {
+                precondition(directPixels.colorAt(x: x, y: y)!.matches(libraryPixels.colorAt(x: x, y: y)!),
+                             "Direct and library rendering must agree on Retina annotation positions")
+            }
+        }
+        frame.horizontalPadding = 100
+        frame.save()
+        precondition(store.rendered(for: styledItem)?.size == framedSize, "Later style choices must not change old screenshots")
+        store.updateEditor(styledItem.id, annotations: [], style: reuse)
+        precondition(store.rendered(for: store.item(styledItem.id)!)?.size == framedSize, "Re-editing must not double padding")
+
+        // Image backgrounds are snapshotted and continue to work after library relocation.
+        let styleRoot = store.root.deletingLastPathComponent().appendingPathComponent("style-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: styleRoot) }
+        let styledStore = HistoryStore(root: styleRoot.appendingPathComponent("old"))
+        let background = render("Background", size: CGSize(width: 80, height: 80))
+        let imageStyle = CaptureStyle(preferences: reuse.preferences, background: .image(background))
+        let imageItem = styledStore.add(original: image, annotations: [], style: imageStyle)!
+        precondition(imageItem.backgroundStyle?.customImagePath == "background.png")
+        let snapshotPath = styledStore.backgroundPreferences(for: imageItem)!.customImagePath!
+        let snapshotBytes = try Data(contentsOf: URL(fileURLWithPath: snapshotPath))
+        try styledStore.changeLocation(to: styleRoot.appendingPathComponent("new"), copyExisting: true)
+        let movedStyle = styledStore.item(imageItem.id)!
+        let movedPath = styledStore.backgroundPreferences(for: movedStyle)!.customImagePath!
+        precondition(movedPath != snapshotPath && FileManager.default.fileExists(atPath: movedPath))
+        let movedBytes = try Data(contentsOf: URL(fileURLWithPath: movedPath))
+        precondition(movedBytes == snapshotBytes && styledStore.rendered(for: movedStyle)?.size == framedSize)
+        var missing = reuse.preferences
+        missing.backgroundType = 3
+        missing.customImagePath = styleRoot.appendingPathComponent("missing.png").path
+        precondition(CaptureStyle(preferences: missing).render(image)?.size == framedSize,
+                     "Unavailable backgrounds must fall back to a gradient like the editor")
+        store.delete([styledItem.id])
+
         // Changing folders preserves editable captures and only commits the preference on success.
         let migrationRoot = store.root.deletingLastPathComponent().appendingPathComponent("migration-" + UUID().uuidString)
         let locationSuite = "SnapokLibraryLocation-" + UUID().uuidString

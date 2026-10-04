@@ -3,6 +3,10 @@ import Security
 
 /// User-facing settings backed by UserDefaults. The API key lives in the Keychain, not here.
 enum AppSettings {
+    static var reuseEditorStyle: Bool {
+        get { defaults.bool(forKey: "capture.reuseEditorStyle") }
+        set { defaults.set(newValue, forKey: "capture.reuseEditorStyle") }
+    }
     private static var defaults: UserDefaults { .standard }
 
     static var autoSave: Bool {
@@ -73,7 +77,7 @@ enum Keychain {
 
 extension Annotation: Codable {
     private enum CodingKeys: String, CodingKey {
-        case kind, rect, points, text, color, sizeLevel, textStyle
+        case kind, rect, points, text, color, sizeLevel, textStyle, stepStyle, stepNumber
     }
 
     init(from decoder: Decoder) throws {
@@ -86,7 +90,9 @@ extension Annotation: Codable {
             text: try container.decodeIfPresent(String.self, forKey: .text) ?? "",
             color: NSColor(srgbRed: rgba[0], green: rgba[1], blue: rgba[2], alpha: rgba.count > 3 ? rgba[3] : 1),
             sizeLevel: try container.decode(Int.self, forKey: .sizeLevel),
-            textStyle: try container.decodeIfPresent(AnnotationTextStyle.self, forKey: .textStyle)
+            textStyle: try container.decodeIfPresent(AnnotationTextStyle.self, forKey: .textStyle),
+            stepStyle: try container.decodeIfPresent(StepMarkerStyle.self, forKey: .stepStyle),
+            stepNumber: try container.decodeIfPresent(String.self, forKey: .stepNumber)
         )
     }
 
@@ -100,6 +106,8 @@ extension Annotation: Codable {
         try container.encode([srgb.redComponent, srgb.greenComponent, srgb.blueComponent, srgb.alphaComponent], forKey: .color)
         try container.encode(sizeLevel, forKey: .sizeLevel)
         try container.encodeIfPresent(textStyle, forKey: .textStyle)
+        try container.encodeIfPresent(stepStyle, forKey: .stepStyle)
+        try container.encodeIfPresent(stepNumber, forKey: .stepNumber)
     }
 }
 
@@ -113,6 +121,7 @@ struct HistoryItem: Codable {
     var tags: [String]
     var ocrText: String
     var annotations: [Annotation]
+    var backgroundStyle: BackgroundPreferences? = nil
 
     var displayTitle: String {
         if !title.isEmpty { return title }
@@ -260,7 +269,7 @@ final class HistoryStore {
     }
 
     private func writeThumbnail(for item: HistoryItem, original: NSImage) {
-        guard let rendered = HistoryRenderer.render(original: original, annotations: item.annotations),
+        guard let rendered = render(original: original, item: item),
               let thumbnail = rendered.scaled(maxPixel: 640) else { return }
         try? thumbnail.pngData?.write(to: thumbnailURL(item.id), options: .atomic)
         thumbnails[item.id] = thumbnail
@@ -268,12 +277,12 @@ final class HistoryStore {
 
     /// Records a finished capture. Returns nil when auto-save is off or the write fails.
     @discardableResult
-    func add(original: NSImage, annotations: [Annotation]) -> HistoryItem? {
+    func add(original: NSImage, annotations: [Annotation], style: CaptureStyle? = nil) -> HistoryItem? {
         guard AppSettings.autoSave,
               let cgImage = original.cgImage(forProposedRect: nil, context: nil, hints: nil),
               let png = original.pngData else { return nil }
 
-        let item = HistoryItem(
+        var item = HistoryItem(
             id: UUID(),
             createdAt: Date(),
             pointSize: original.size,
@@ -286,6 +295,10 @@ final class HistoryStore {
         do {
             try FileManager.default.createDirectory(at: folder(item.id), withIntermediateDirectories: true)
             try png.write(to: originalURL(item.id), options: .atomic)
+            if let style {
+                item.backgroundStyle = try style.snapshot(in: folder(item.id))
+                item.pixelSize = style.layout.canvasSize(for: item.pixelSize)
+            }
         } catch {
             log("history write failed", error: error)
             return nil
@@ -354,7 +367,34 @@ final class HistoryStore {
     }
 
     func rendered(for item: HistoryItem) -> NSImage? {
-        original(for: item).flatMap { HistoryRenderer.render(original: $0, annotations: item.annotations) }
+        original(for: item).flatMap { render(original: $0, item: item) }
+    }
+
+    func backgroundPreferences(for item: HistoryItem) -> BackgroundPreferences? {
+        guard var preferences = item.backgroundStyle else { return nil }
+        if let path = preferences.customImagePath, !path.hasPrefix("/") {
+            preferences.customImagePath = folder(item.id).appendingPathComponent(path).path
+        }
+        return preferences
+    }
+
+    private func render(original: NSImage, item: HistoryItem) -> NSImage? {
+        guard let annotated = HistoryRenderer.render(original: original, annotations: item.annotations) else { return nil }
+        guard let preferences = backgroundPreferences(for: item) else { return annotated }
+        return CaptureStyle(preferences: preferences).render(annotated)
+    }
+
+    func updateEditor(_ id: UUID, annotations: [Annotation], style: CaptureStyle) {
+        guard let item = item(id), let original = original(for: item),
+              let source = original.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+        do {
+            let preferences = try style.snapshot(in: folder(id))
+            update(id, regenerateThumbnail: true) {
+                $0.annotations = annotations
+                $0.backgroundStyle = preferences
+                $0.pixelSize = style.layout.canvasSize(for: CGSize(width: source.width, height: source.height))
+            }
+        } catch { log("history editor style write failed", error: error) }
     }
 
     func fileURL(for item: HistoryItem) -> URL { originalURL(item.id) }

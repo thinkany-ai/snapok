@@ -82,6 +82,91 @@ struct EditorCanvasTests {
         context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
         context.fill(CGRect(x: 0, y: 0, width: 600, height: 400))
         let image = NSImage(cgImage: context.makeImage()!, size: CGSize(width: 300, height: 200))
+        // Step markers place immediately, remain editable, and resume numbering after undo/reopen.
+        let steps = BackgroundPreview(image: image)
+        let stepsWindow = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 720, height: 520), styleMask: [.borderless], backing: .buffered, defer: false)
+        steps.frame = stepsWindow.contentView!.bounds
+        stepsWindow.contentView = steps
+        steps.chooseTool(.step)
+        func stepEvent(_ type: NSEvent.EventType, _ point: CGPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                              windowNumber: stepsWindow.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        }
+        let firstStepPoint = CGPoint(x: 310, y: 260)
+        let secondStepPoint = CGPoint(x: 410, y: 260)
+        steps.mouseDown(with: stepEvent(.leftMouseDown, firstStepPoint))
+        precondition(steps.annotations.map(\.text) == ["1"], "A single click must place step 1 without dragging")
+        steps.mouseUp(with: stepEvent(.leftMouseUp, firstStepPoint))
+        steps.mouseDown(with: stepEvent(.leftMouseDown, secondStepPoint))
+        steps.mouseUp(with: stepEvent(.leftMouseUp, secondStepPoint))
+        precondition(steps.annotations.map(\.text) == ["1", "2"], "Each click must add exactly one consecutive step")
+        steps.undoEdit()
+        precondition(steps.annotations.map(\.text) == ["1"])
+        steps.mouseDown(with: stepEvent(.leftMouseDown, secondStepPoint))
+        steps.mouseUp(with: stepEvent(.leftMouseUp, secondStepPoint))
+        precondition(steps.annotations.last!.text == "2", "Undo must also restore the next step number")
+        let markerRect = steps.annotations[0].rect
+        steps.mouseDown(with: stepEvent(.leftMouseDown, firstStepPoint))
+        steps.mouseDragged(with: stepEvent(.leftMouseDragged, CGPoint(x: 320, y: 270)))
+        steps.mouseUp(with: stepEvent(.leftMouseUp, CGPoint(x: 320, y: 270)))
+        precondition(steps.annotations.count == 2 && steps.annotations[0].rect.origin != markerRect.origin,
+                     "Dragging a step must move it without creating another number")
+        let stepCenter = CGPoint(x: steps.annotations[0].rect.midX, y: steps.annotations[0].rect.midY)
+        steps.sizeLevel = 2
+        steps.selectedColor = .blue
+        steps.applyStyle()
+        precondition(steps.annotations[0].rect.width == 48 && steps.annotations[0].color.matches(.blue))
+        precondition(CGPoint(x: steps.annotations[0].rect.midX, y: steps.annotations[0].rect.midY) == stepCenter,
+                     "Changing size must preserve a step's center")
+        let savedSteps = try JSONDecoder().decode([Annotation].self, from: JSONEncoder().encode(steps.annotations))
+        precondition(savedSteps.map(\.text) == ["1", "2"] && savedSteps.allSatisfy { $0.kind == .step })
+        precondition(StepMarkers.nextNumber(in: savedSteps) == 3 && StepMarkers.nextNumber(in: []) == 1)
+        steps.deleteSelected()
+        precondition(steps.annotations.map(\.text) == ["2"] && StepMarkers.nextNumber(in: steps.annotations) == 3,
+                     "Deleting an earlier step must not renumber existing steps")
+        let stepExport = HistoryRenderer.render(original: image, annotations: savedSteps)!
+        precondition(stepExport.size == image.size && stepExport.pngData != image.pngData,
+                     "Step circles and numbers must appear in Retina exports")
+        var styleExports: [Data] = []
+        for style in StepMarkerStyle.allCases {
+            var annotation = savedSteps[0]
+            annotation.stepStyle = style
+            let restored = try JSONDecoder().decode(Annotation.self, from: JSONEncoder().encode(annotation))
+            precondition(restored.stepStyle == style)
+            let output = HistoryRenderer.render(original: image, annotations: [annotation])!
+            styleExports.append(output.pngData!)
+            if CommandLine.arguments.count > 1 {
+                try output.pngData!.write(to: URL(fileURLWithPath: CommandLine.arguments[1] + "-step-" + style.rawValue + ".png"))
+            }
+        }
+        precondition(Set(styleExports).count == StepMarkerStyle.allCases.count, "All three step styles must render differently")
+        var legacyStep = try JSONSerialization.jsonObject(with: JSONEncoder().encode(savedSteps[0])) as! [String: Any]
+        legacyStep.removeValue(forKey: "stepStyle")
+        let restoredLegacyStep = try JSONDecoder().decode(Annotation.self, from: JSONSerialization.data(withJSONObject: legacyStep))
+        precondition(restoredLegacyStep.stepStyle == nil && restoredLegacyStep.text == "1", "Old number markers must reopen as filled circles")
+        steps.chooseTool(.rect)
+        steps.setNumberRect(true)
+        steps.stepStyle = .roundedSquare
+        steps.mouseDown(with: stepEvent(.leftMouseDown, CGPoint(x: 300, y: 220)))
+        steps.mouseDragged(with: stepEvent(.leftMouseDragged, CGPoint(x: 420, y: 300)))
+        steps.mouseUp(with: stepEvent(.leftMouseUp, CGPoint(x: 420, y: 300)))
+        precondition(steps.annotations.last!.kind == .rect && steps.annotations.last!.stepNumber == "3")
+        precondition(steps.annotations.last!.stepStyle == .roundedSquare && StepMarkers.nextNumber(in: steps.annotations) == 4,
+                     "Automatic rectangle numbering must share the marker sequence and style")
+        let numberedBox = steps.annotations.last!
+        let shiftedBox = numberedBox.offsetBy(dx: 20, dy: -10)
+        precondition(StepMarkers.badgeRect(for: shiftedBox).origin == CGPoint(x: StepMarkers.badgeRect(for: numberedBox).minX + 20,
+                                                                           y: StepMarkers.badgeRect(for: numberedBox).minY - 10))
+        precondition(shiftedBox.stepNumber == "3", "Moving a numbered rectangle must preserve and move its number")
+        let restoredBox = try JSONDecoder().decode(Annotation.self, from: JSONEncoder().encode(numberedBox))
+        precondition(restoredBox.stepNumber == "3" && restoredBox.stepStyle == .roundedSquare)
+        steps.undoEdit()
+        precondition(steps.annotations.last!.text == "2" && StepMarkers.nextNumber(in: steps.annotations) == 3)
+        steps.setNumberRect(false)
+        steps.mouseDown(with: stepEvent(.leftMouseDown, CGPoint(x: 300, y: 220)))
+        steps.mouseDragged(with: stepEvent(.leftMouseDragged, CGPoint(x: 420, y: 300)))
+        steps.mouseUp(with: stepEvent(.leftMouseUp, CGPoint(x: 420, y: 300)))
+        precondition(steps.annotations.last!.stepNumber == nil, "Ordinary rectangles must remain unnumbered when the switch is off")
         // Image editing types directly on the image, preserving original coordinates at any zoom.
         let inline = BackgroundPreview(image: image)
         let inlineWindow = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 720, height: 520), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -448,6 +533,14 @@ struct EditorCanvasTests {
             guard case .editImage? = delegate.mode else { preconditionFailure("The channel edit shortcut must open the selected image in the editor") }
             precondition(delegate.result?.globalRect.size == CGSize(width: 200, height: 150))
             precondition(ToolbarAction.editImage.title?.contains(AppChannel.editImageHotKey.symbol) == true)
+            precondition(captureWindow.performKeyEquivalent(with: toolKey(kVK_ANSI_N)))
+            view.mouseDown(with: captureEvent(.leftMouseDown, 140, 125))
+            view.mouseUp(with: captureEvent(.leftMouseUp, 140, 125))
+            view.mouseDown(with: captureEvent(.leftMouseDown, 270, 125))
+            view.mouseUp(with: captureEvent(.leftMouseUp, 270, 125))
+            view.editImage()
+            let captureSteps = delegate.result!.annotations.filter { $0.kind == .step }
+            precondition(captureSteps.map(\.text) == ["1", "2"], "Capture overlay must place sequential markers using N and single clicks")
         }
         // Repeated language changes must replace the library page, not stack old pages.
         let languageSuite = "SnapokLibraryRelocalization-" + UUID().uuidString

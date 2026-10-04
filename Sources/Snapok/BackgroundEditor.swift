@@ -37,10 +37,14 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     /// The library entry this editor writes its annotations back to on close.
     var historyID: UUID?
     var annotations: [Annotation] { preview.commitTextEditing(restoreFocus: false); return preview.annotations }
+    var captureStyle: CaptureStyle { CaptureStyle(preferences: preferences, background: preview.background) }
     private var toolButtons: [NSButton] = []
     private let strokePicker = NSPopUpButton()
+    private let stepStylePicker = NSPopUpButton()
+    private let numberRect = NSButton(checkboxWithTitle: L("Number boxes", "画框自动编号"), target: nil, action: nil)
     private let textControls = AnnotationTextControls()
     private let strokeControls = NSStackView()
+    private var toolbarHeight: NSLayoutConstraint?
     private let annotationColor = NSColorWell()
     private let quickActions: [ToolbarAction] = ToolKind.allCases.map { .tool($0) } + [.undo, .pin, .save, .cancel, .done]
     private let preview: BackgroundPreview
@@ -60,7 +64,8 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     private var selectedBackground = 0
     private var selectedGradient = 0
 
-    init(image: NSImage, screen: NSScreen?, annotations: [Annotation] = []) {
+    init(image: NSImage, screen: NSScreen?, annotations: [Annotation] = [], style: BackgroundPreferences? = nil) {
+        if let style { preferences = style }
         preview = BackgroundPreview(image: image, annotations: annotations)
         if let screen = screen ?? NSScreen.main, let url = NSWorkspace.shared.desktopImageURL(for: screen) {
             wallpaper = NSImage(contentsOf: url)
@@ -138,6 +143,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         document.addSubview(controls)
         scroll.documentView = document
         sidebar.addSubview(scroll)
+        toolbarHeight = toolbar.heightAnchor.constraint(equalToConstant: 126)
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: root.topAnchor), header.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: root.trailingAnchor), header.heightAnchor.constraint(equalToConstant: 82),
@@ -148,7 +154,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
             preview.topAnchor.constraint(equalTo: header.bottomAnchor), preview.bottomAnchor.constraint(equalTo: toolbar.topAnchor),
             preview.leadingAnchor.constraint(equalTo: root.leadingAnchor), preview.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor),
             toolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor), toolbar.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor),
-            toolbar.bottomAnchor.constraint(equalTo: root.bottomAnchor), toolbar.heightAnchor.constraint(equalToConstant: 126),
+            toolbar.bottomAnchor.constraint(equalTo: root.bottomAnchor), toolbarHeight!,
             scroll.topAnchor.constraint(equalTo: sidebar.topAnchor), scroll.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
@@ -261,6 +267,14 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
             self.preview.applyStyle()
         }
         textControls.widthAnchor.constraint(equalToConstant: 288).isActive = true
+        stepStylePicker.addItems(withTitles: StepMarkerStyle.allCases.map(\.title))
+        stepStylePicker.target = self
+        stepStylePicker.action = #selector(changeStepStyle)
+        stepStylePicker.setAccessibilityLabel(L("Number style", "编号样式"))
+        numberRect.target = self
+        numberRect.action = #selector(changeNumberRect)
+        let numberOptions = NSStackView(views: [numberRect, stepStylePicker])
+        numberOptions.spacing = 10
         let options = NSStackView(views: [strokeControls, textControls, label(L("Color", "颜色"), size: 11), annotationColor])
         options.spacing = 10
         for (index, color) in Style.colors.enumerated() {
@@ -295,11 +309,12 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         hint.textColor = .secondaryLabelColor
         let zoomControls = NSStackView(views: [zoomOut, zoomLabel, zoomIn, actualSize, fit, hint])
         zoomControls.spacing = 6
-        [tools, options, zoomControls].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; bar.addSubview($0) }
+        [tools, options, numberOptions, zoomControls].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; bar.addSubview($0) }
         NSLayoutConstraint.activate([
             tools.centerXAnchor.constraint(equalTo: bar.centerXAnchor), tools.topAnchor.constraint(equalTo: bar.topAnchor, constant: 12),
             options.centerXAnchor.constraint(equalTo: bar.centerXAnchor), options.topAnchor.constraint(equalTo: tools.bottomAnchor, constant: 10),
-            zoomControls.centerXAnchor.constraint(equalTo: bar.centerXAnchor), zoomControls.topAnchor.constraint(equalTo: options.bottomAnchor, constant: 8)
+            numberOptions.centerXAnchor.constraint(equalTo: bar.centerXAnchor), numberOptions.topAnchor.constraint(equalTo: options.bottomAnchor, constant: 6),
+            zoomControls.centerXAnchor.constraint(equalTo: bar.centerXAnchor), zoomControls.topAnchor.constraint(equalTo: numberOptions.bottomAnchor, constant: 8)
         ])
         return bar
     }
@@ -327,6 +342,13 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         preview.selectedColor = annotationColor.color
         preview.applyStyle()
     }
+    @objc private func changeStepStyle() {
+        preview.stepStyle = StepMarkerStyle.allCases[stepStylePicker.indexOfSelectedItem]
+        preview.applyStyle()
+    }
+    @objc private func changeNumberRect() {
+        preview.setNumberRect(numberRect.state == .on)
+    }
     @objc private func selectAnnotationColor(_ sender: NSButton) {
         annotationColor.color = Style.colors[sender.tag]
         changeAnnotationStyle()
@@ -334,6 +356,11 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     private func syncTools() {
         textControls.isHidden = !preview.usesTextStyle
         strokeControls.isHidden = preview.usesTextStyle
+        stepStylePicker.isHidden = !preview.usesStepStyle
+        numberRect.isHidden = !preview.usesRectStyle
+        numberRect.state = preview.autoNumberRect ? .on : .off
+        toolbarHeight?.constant = preview.usesStepStyle || preview.usesRectStyle ? 154 : 126
+        stepStylePicker.selectItem(at: StepMarkerStyle.allCases.firstIndex(of: preview.stepStyle) ?? 0)
         textControls.update(preview.textStyle, pixelScale: preview.pixelScale)
         for (index, button) in toolButtons.enumerated() {
             if case .tool(let tool) = quickActions[index] {
@@ -467,6 +494,17 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         selectedGradient = preferences.gradient
         selectedBackground = preferences.backgroundType
         if let path = preferences.customImagePath { customImage = NSImage(contentsOfFile: path) }
+        // Keep last-used image defaults independent of the lifetime of a library item.
+        if let customImage, let data = customImage.tiffRepresentation {
+            let url = AppChannel.supportDirectory.appendingPathComponent("EditorBackground.tiff")
+            if preferences.customImagePath != url.path {
+                do {
+                    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try data.write(to: url, options: .atomic)
+                    preferences.customImagePath = url.path
+                } catch { log("editor background defaults write failed", error: error) }
+            }
+        }
         if (selectedBackground == 1 && wallpaper == nil) || (selectedBackground == 3 && customImage == nil) {
             selectedBackground = 0
         }

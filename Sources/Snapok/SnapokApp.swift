@@ -323,6 +323,19 @@ final class ScreenshotController {
 
         let original = ScreenCapture.crop(image: image, to: result.globalRect)
         let screen = NSScreen.screens.first { $0.frame.intersects(result.globalRect) }
+        let style = mode == .editImage ? nil : CaptureStyle.forNewCapture(screen: screen)
+        let output: NSImage
+        if let style {
+            guard let styled = style.render(rendered) else {
+                closeWindows()
+                let alert = NSAlert()
+                alert.messageText = L("Unable to apply image style", "无法应用图片样式")
+                alert.informativeText = L("The framed image exceeds the supported size. Reduce padding in the image editor or disable reuse of the last editing style.", "应用样式后的图片超出支持的尺寸。请在编辑器中减小留白，或关闭沿用上次编辑样式。")
+                alert.runModal()
+                return
+            }
+            output = styled
+        } else { output = rendered }
         Telemetry.capture("capture_finished", ["action": "\(mode)", "annotations": result.annotations.count])
         switch mode {
         case .scroll:
@@ -333,22 +346,26 @@ final class ScreenshotController {
             let item = HistoryStore.shared.add(original: original, annotations: result.annotations)
             openEditor(image: original, annotations: result.annotations, screen: screen, historyID: item?.id)
         case .copy:
-            ImageExport.copy(rendered)
+            ImageExport.copy(output)
             closeWindows()
-            record(original, result.annotations)
+            record(original, result.annotations, style: style)
         case .pin:
-            pin(rendered, at: result.globalRect)
+            if style != nil {
+                output.size = CGSize(width: output.size.width / (screen?.backingScaleFactor ?? 1),
+                                     height: output.size.height / (screen?.backingScaleFactor ?? 1))
+                pinCentered(output, on: screen)
+            } else { pin(output, at: result.globalRect) }
             closeWindows()
-            record(original, result.annotations)
+            record(original, result.annotations, style: style)
         case .save:
             windows.forEach { $0.orderOut(nil) }
-            switch ImageExport.save(rendered) {
+            switch ImageExport.save(output) {
             case .cancelled:
                 windows.forEach { $0.orderFrontRegardless() }
                 window.makeKey()
             case .saved:
                 closeWindows()
-                record(original, result.annotations)
+                record(original, result.annotations, style: style)
             case .failed:
                 closeWindows()
             }
@@ -377,10 +394,10 @@ final class ScreenshotController {
     }
 
     /// Adds a finished capture to the library after the overlay is gone, so writing the PNG never delays it.
-    private func record(_ original: NSImage?, _ annotations: [Annotation]) {
+    private func record(_ original: NSImage?, _ annotations: [Annotation], style: CaptureStyle? = nil) {
         guard let original else { return }
         DispatchQueue.main.async {
-            HistoryStore.shared.add(original: original, annotations: annotations)
+            HistoryStore.shared.add(original: original, annotations: annotations, style: style)
         }
     }
 
@@ -395,17 +412,18 @@ final class ScreenshotController {
             NSSound.beep()
             return
         }
-        openEditor(image: original, annotations: item.annotations, screen: NSScreen.main, historyID: item.id)
+        openEditor(image: original, annotations: item.annotations, screen: NSScreen.main, historyID: item.id,
+                   style: HistoryStore.shared.backgroundPreferences(for: item))
     }
 
-    private func openEditor(image: NSImage, annotations: [Annotation], screen: NSScreen?, historyID: UUID?) {
-        let editor = BackgroundEditorController(image: image, screen: screen, annotations: annotations)
+    private func openEditor(image: NSImage, annotations: [Annotation], screen: NSScreen?, historyID: UUID?, style: BackgroundPreferences? = nil) {
+        let editor = BackgroundEditorController(image: image, screen: screen, annotations: annotations, style: style)
         editor.historyID = historyID
         editors.append(editor)
         editor.onClose = { [weak self, weak editor] in
             guard let self, let editor else { return }
             if let id = editor.historyID {
-                HistoryStore.shared.update(id, regenerateThumbnail: true) { $0.annotations = editor.annotations }
+                HistoryStore.shared.updateEditor(id, annotations: editor.annotations, style: editor.captureStyle)
             }
             self.editors.removeAll { $0 === editor }
         }
@@ -478,6 +496,7 @@ enum ToolKind: String, CaseIterable, Codable {
     case pen
     case mosaic
     case text
+    case step
 
     var shortcut: String {
         switch self {
@@ -487,6 +506,7 @@ enum ToolKind: String, CaseIterable, Codable {
         case .pen: return "P"
         case .mosaic: return "M"
         case .text: return "T"
+        case .step: return "N"
         }
     }
 
@@ -498,6 +518,7 @@ enum ToolKind: String, CaseIterable, Codable {
         case .pen: return UInt16(kVK_ANSI_P)
         case .mosaic: return UInt16(kVK_ANSI_M)
         case .text: return UInt16(kVK_ANSI_T)
+        case .step: return UInt16(kVK_ANSI_N)
         }
     }
 
@@ -514,6 +535,7 @@ enum ToolKind: String, CaseIterable, Codable {
         case .pen: return "scribble"
         case .mosaic: return "checkerboard.rectangle"
         case .text: return "textformat"
+        case .step: return "1.circle"
         }
     }
 
@@ -525,6 +547,7 @@ enum ToolKind: String, CaseIterable, Codable {
         case .pen: return L("Pen", "画笔")
         case .mosaic: return L("Mosaic", "马赛克")
         case .text: return L("Text", "文字")
+        case .step: return L("Step Number", "步骤编号")
         }
     }
 }
@@ -561,6 +584,8 @@ struct Annotation {
     var color: NSColor
     var sizeLevel: Int
     var textStyle: AnnotationTextStyle? = nil
+    var stepStyle: StepMarkerStyle? = nil
+    var stepNumber: String? = nil
 
     var lineWidth: CGFloat {
         Style.lineWidth(for: kind, level: sizeLevel)
@@ -815,6 +840,16 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         selectedTool == .text || selectedAnnotationIndex.map { annotations.indices.contains($0) && annotations[$0].kind == .text } == true
     }
     private var sizeLevel = 1
+    private var stepStyle: StepMarkerStyle = .filledCircle
+    private var autoNumberRect = false
+    private var usesRectStyle: Bool {
+        selectedTool == .rect || selectedAnnotationIndex.map { annotations.indices.contains($0) && annotations[$0].kind == .rect } == true
+    }
+    private var usesStepStyle: Bool {
+        selectedTool == .step || (usesRectStyle && autoNumberRect) || selectedAnnotationIndex.map {
+            annotations.indices.contains($0) && (annotations[$0].kind == .step || annotations[$0].stepNumber != nil)
+        } == true
+    }
     private var annotations: [Annotation] = []
     private var draftAnnotation: Annotation?
     private var dragState: DragState = .idle
@@ -977,6 +1012,9 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             text += "  · \(tool.title) (\(tool.shortcut))"
             if tool == .text {
                 text += activeTextField == nil ? L(" · Click to type", " · 点击输入") : L(" · Enter / Esc to finish typing", " · Enter / Esc 结束输入")
+            } else if tool == .step {
+                let next = StepMarkers.nextNumber(in: annotations)
+                text += L(" · Click to place step \(next)", " · 点击放置步骤 \(next)")
             } else {
                 text += L(" · Drag to draw", " · 拖动绘制")
             }
@@ -1245,13 +1283,37 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     }
 
     private var optionsWidth: CGFloat {
-        12 + (usesTextStyle ? 288 : CGFloat(Style.sizeLevels) * 28) + 13 + CGFloat(Style.colors.count) * 26
+        12 + (usesTextStyle ? 288 : CGFloat(Style.sizeLevels) * 28) + (usesStepStyle ? 126 : 0) + (usesRectStyle ? 142 : 0) + 13 + CGFloat(Style.colors.count) * 26
     }
 
     private func drawOptions(in panel: CGRect) {
         drawPanel(panel)
 
         var cursorX = panel.minX + 6
+        if usesRectStyle {
+            let rect = CGRect(x: cursorX, y: panel.minY + 3, width: 136, height: 26)
+            NSAppearance(named: .aqua)?.performAsCurrentDrawingAppearance {
+                let cell = NSButtonCell(textCell: L("Number boxes", "画框自动编号"))
+                cell.setButtonType(.switch)
+                cell.font = .systemFont(ofSize: 12)
+                cell.state = autoNumberRect ? .on : .off
+                cell.draw(withFrame: rect, in: self)
+            }
+            toolbarButtons.append((.numberRect, rect))
+            cursorX += 142
+        }
+        if usesStepStyle {
+            let rect = CGRect(x: cursorX, y: panel.minY + 3, width: 120, height: 26)
+            NSAppearance(named: .aqua)?.performAsCurrentDrawingAppearance {
+                let cell = NSPopUpButtonCell(textCell: stepStyle.title, pullsDown: false)
+                cell.addItem(withTitle: stepStyle.title)
+                cell.bezelStyle = .rounded
+                cell.font = .systemFont(ofSize: 13)
+                cell.draw(withFrame: rect, in: self)
+            }
+            toolbarButtons.append((.stepAppearance, rect))
+            cursorX += 126
+        }
         if usesTextStyle {
             NSAppearance(named: .aqua)?.performAsCurrentDrawingAppearance {
                 for (action, width, title) in [(ToolbarAction.fontFamily, CGFloat(140), textStyle.family ?? L("System Font", "系统字体"))] {
@@ -1401,6 +1463,24 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         switch action {
         case .fontFamily:
             showTextStyleMenu(action)
+        case .stepAppearance:
+            guard let rect = toolbarButtons.first(where: { $0.action == action })?.rect else { return }
+            let menu = NSMenu()
+            for style in StepMarkerStyle.allCases {
+                let item = NSMenuItem(title: style.title, action: #selector(pickStepStyle(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = style.rawValue
+                item.state = stepStyle == style ? .on : .off
+                menu.addItem(item)
+            }
+            menu.popUp(positioning: nil, at: CGPoint(x: rect.minX, y: rect.minY), in: self)
+        case .numberRect:
+            autoNumberRect.toggle()
+            if let index = selectedAnnotationIndex, annotations[index].kind == .rect {
+                annotations[index].stepNumber = autoNumberRect
+                    ? annotations[index].stepNumber ?? String(StepMarkers.nextNumber(in: annotations)) : nil
+                annotations[index].stepStyle = stepStyle
+            }
         case .textBold:
             textStyle.bold.toggle()
             applyStyleToSelection()
@@ -1457,6 +1537,13 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     @objc private func pickTextFamily(_ item: NSMenuItem) {
         let family = item.representedObject as? String ?? ""
         textStyle.family = family.isEmpty ? nil : family
+        applyStyleToSelection()
+        needsDisplay = true
+    }
+
+    @objc private func pickStepStyle(_ item: NSMenuItem) {
+        guard let value = item.representedObject as? String, let style = StepMarkerStyle(rawValue: value) else { return }
+        stepStyle = style
         applyStyleToSelection()
         needsDisplay = true
     }
@@ -1543,6 +1630,11 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             selectedAnnotationIndex = index
             selectedColor = annotations[index].color
             sizeLevel = annotations[index].sizeLevel
+            if annotations[index].kind == .step { stepStyle = annotations[index].stepStyle ?? .filledCircle }
+            if annotations[index].kind == .rect {
+                autoNumberRect = annotations[index].stepNumber != nil
+                stepStyle = annotations[index].stepStyle ?? .filledCircle
+            }
             if annotations[index].kind == .text { textStyle = annotations[index].effectiveTextStyle }
             dragState = .movingAnnotation(index: index, lastPoint: point)
             needsDisplay = true
@@ -1832,6 +1924,11 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     // MARK: Annotations
 
     private func beginAnnotation(_ tool: ToolKind, at point: CGPoint) {
+        if tool == .step {
+            annotations.append(StepMarkers.make(at: point, annotations: annotations, color: selectedColor, sizeLevel: sizeLevel, style: stepStyle))
+            dragState = .idle
+            return
+        }
         if tool == .text {
             beginText(at: point)
             return
@@ -1866,7 +1963,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
 
     private func finishDraft() {
         defer { draftAnnotation = nil }
-        guard let draft = draftAnnotation else { return }
+        guard var draft = draftAnnotation else { return }
         let isUsable: Bool
         switch draft.kind {
         case .pen, .mosaic:
@@ -1877,6 +1974,10 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             isUsable = draft.rect.width >= 3 && draft.rect.height >= 3
         }
         if isUsable {
+            if draft.kind == .rect, autoNumberRect {
+                draft.stepNumber = String(StepMarkers.nextNumber(in: annotations))
+                draft.stepStyle = stepStyle
+            }
             annotations.append(draft)
         }
     }
@@ -1994,6 +2095,10 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         guard let index = selectedAnnotationIndex, annotations.indices.contains(index) else { return }
         annotations[index].color = selectedColor
         annotations[index].sizeLevel = sizeLevel
+        if annotations[index].kind == .step || annotations[index].stepNumber != nil {
+            annotations[index].stepStyle = stepStyle
+            if annotations[index].kind == .step { StepMarkers.resize(&annotations[index]) }
+        }
         if annotations[index].kind == .text {
             annotations[index].textStyle = textStyle
             let size = (annotations[index].text as NSString).size(withAttributes: [.font: textFont(level: sizeLevel)])
@@ -2128,6 +2233,8 @@ enum ToolbarAction: Equatable {
     case select
     case fontFamily
     case textBold
+    case stepAppearance
+    case numberRect
     case scroll
     case editImage
     case tool(ToolKind)
@@ -2150,7 +2257,7 @@ enum ToolbarAction: Equatable {
         case .save: return "square.and.arrow.down"
         case .cancel: return "xmark"
         case .done: return "checkmark"
-        case .size, .color, .fontFamily, .textBold: return nil
+        case .size, .color, .fontFamily, .textBold, .stepAppearance, .numberRect: return nil
         }
     }
 
@@ -2158,6 +2265,8 @@ enum ToolbarAction: Equatable {
         switch self {
         case .fontFamily: return L("Font", "字体")
         case .textBold: return L("Bold", "加粗")
+        case .stepAppearance: return L("Number style", "编号样式")
+        case .numberRect: return L("Automatically number rectangles", "矩形标注自动编号")
         case .select: return L("Select / Move (V)", "选择 / 移动（V）")
         case .tool(let tool): return "\(tool.title) (\(tool.shortcut))"
         case .scroll: return L("Scrolling Capture (⌘L)", "长截图（⌘L）")
@@ -2267,6 +2376,7 @@ enum AnnotationRenderer {
         switch annotation.kind {
         case .rect:
             context.stroke(annotation.rect)
+            StepMarkers.drawRectangleNumber(annotation, in: context)
         case .oval:
             context.strokeEllipse(in: annotation.rect)
         case .arrow:
@@ -2276,6 +2386,8 @@ enum AnnotationRenderer {
             context.strokePath()
         case .text:
             drawText(annotation)
+        case .step:
+            StepMarkers.draw(annotation, in: context)
         case .mosaic:
             drawMosaic(annotation, in: context, sourceImage: sourceImage, origin: origin, localImage: localImage)
         }
@@ -2502,9 +2614,13 @@ extension Annotation {
     func hitTest(_ point: CGPoint) -> Bool {
         let tolerance = max(6, lineWidth / 2 + 4)
         switch kind {
+        case .step:
+            let radius = annotationRadius
+            return hypot(point.x - rect.midX, point.y - rect.midY) <= radius + 4
         case .text, .mosaic:
             return rect.insetBy(dx: -4, dy: -4).contains(point)
         case .rect:
+            if stepNumber != nil, StepMarkers.badgeRect(for: self).contains(point) { return true }
             return rect.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
                 && !rect.insetBy(dx: tolerance, dy: tolerance).contains(point)
         case .oval:
@@ -2522,6 +2638,8 @@ extension Annotation {
             return false
         }
     }
+
+    private var annotationRadius: CGFloat { min(rect.width, rect.height) / 2 }
 
     private func distance(_ point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {
         let dx = end.x - start.x

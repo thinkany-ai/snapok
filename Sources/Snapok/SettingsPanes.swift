@@ -128,6 +128,7 @@ final class CardView: NSView {
 @MainActor
 final class GeneralSettingsPane: PageView {
     private let autoSave = NSButton(checkboxWithTitle: L("Automatically save screenshots to the library", "截图后自动保存到截图库"), target: nil, action: nil)
+    private let reuseEditorStyle = NSButton(checkboxWithTitle: L("Use the last image editing style for new screenshots", "新截图沿用上次编辑图片的样式"), target: nil, action: nil)
     private let retention = NSPopUpButton()
     private let language = NSPopUpButton()
     private let theme = NSPopUpButton()
@@ -176,6 +177,12 @@ final class GeneralSettingsPane: PageView {
         language.action = #selector(saveLanguage)
         autoSave.target = self
         autoSave.action = #selector(save)
+        reuseEditorStyle.target = self
+        reuseEditorStyle.action = #selector(save)
+        let reuseStyleHint = NSTextField(wrappingLabelWithString: L("Apply background, padding, border, corners, and shadow when copying, saving, or pinning. Annotations are not reused.", "复制、保存或钉图时自动应用背景、留白、描边、圆角和阴影，不沿用标注。"))
+        reuseStyleHint.font = .systemFont(ofSize: 12)
+        reuseStyleHint.textColor = .secondaryLabelColor
+        reuseStyleHint.preferredMaxLayoutWidth = 500
         retention.addItems(withTitles: retentionOptions.map(\.title))
         retention.target = self
         retention.action = #selector(save)
@@ -231,6 +238,8 @@ final class GeneralSettingsPane: PageView {
             [Self.label(L("Component snapping", "组件自动吸附")), snappingRow],
             [NSGridCell.emptyContentView, Self.label(L("Accessibility access locates Dock icons and controls.", "需要辅助功能权限，用于定位 Dock 图标及控件。"), secondary: true)],
             [NSGridCell.emptyContentView, autoSave],
+            [NSGridCell.emptyContentView, reuseEditorStyle],
+            [NSGridCell.emptyContentView, reuseStyleHint],
             [Self.label(L("Keep screenshots", "保留时间")), retention],
             [NSGridCell.emptyContentView, Self.label(L("Screenshots older than this period are deleted automatically.", "超过保留时间的截图会自动删除。"), secondary: true)],
             [Self.label(L("Library", "截图库")), NSStackView(views: [openFolder, clear])],
@@ -249,6 +258,7 @@ final class GeneralSettingsPane: PageView {
         theme.selectItem(at: AppAppearance.allCases.firstIndex(of: AppAppearance.saved()) ?? 0)
         loadCaptureAppearance()
         autoSave.state = AppSettings.autoSave ? .on : .off
+        reuseEditorStyle.state = AppSettings.reuseEditorStyle ? .on : .off
         retention.selectItem(at: retentionOptions.firstIndex { $0.days == AppSettings.retentionDays } ?? 1)
         refreshLibraryLocation()
     }
@@ -322,6 +332,7 @@ final class GeneralSettingsPane: PageView {
 
     @objc private func save() {
         AppSettings.autoSave = autoSave.state == .on
+        AppSettings.reuseEditorStyle = reuseEditorStyle.state == .on
         AppSettings.retentionDays = retentionOptions[retention.indexOfSelectedItem].days
         HistoryStore.shared.purgeExpired()
         NotificationCenter.default.post(name: HistoryStore.didChange, object: nil)
