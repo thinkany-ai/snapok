@@ -18,6 +18,7 @@ Snapok is a native screenshot utility built with Swift and AppKit. Its main wind
 ## Features
 
 - **Capture any region:** drag a selection, click a window, or hover over accessible UI components to select them. Detect the Dock, menu bar, and status items as well. Scroll through parent regions; hold Option to select the whole window or system UI container.
+- **Customize the selection frame:** choose a color, thickness (1–10 px), and solid, dashed, or dotted borders in Settings → General → Screenshot selection. Preview changes immediately; preferences apply to the next capture and stay out of exported images.
 - **Scrolling capture:** capture a long page, chat, or document in one image. Scroll inside the selected area yourself, or let Snapok scroll it; fixed toolbars and input bars appear once.
 - **Annotate:** rectangle, ellipse, arrow, pen, text, and mosaic, with adjustable sizes and colors. Move, restyle, delete, and undo annotations.
 - **Edit images:** keep annotations editable after capture, add desktop wallpaper, gradients, a solid color, or a custom background image. Zoom with the canvas controls or a trackpad pinch, scroll to move around long images, and use `⌘+` / `⌘−` to zoom or `⌘0` to fit the image to the window.
@@ -25,6 +26,7 @@ Snapok is a native screenshot utility built with Swift and AppKit. Its main wind
 - **Export:** copy to the clipboard, save PNG, or pin an image above other windows. Export at the original pixel resolution.
 - **Inspect pixels:** view cursor coordinates and RGB values in the capture magnifier.
 - **Screenshot library:** automatically save finished captures with their annotations, browse them by day, and search by title, tag, or text inside the image. Double-click any screenshot to keep editing it; configure auto-save and retention in Settings.
+- **Choose the library folder:** Settings → General → Storage location lets you change where new screenshots are stored. The library displays the selected folder. Enable “Also copy existing screenshots” to bring previous images and editable annotations along; the original folder is preserved either way.
 - **Make it yours:** switch between Light, Dark, and System themes, choose English or Simplified Chinese, and customize the capture shortcut in General settings.
 - **AI tools:** recognize text and mask phone numbers, emails, ID numbers, and keys on-device; translate a screenshot or ask a question about it with the model of your choice (Anthropic or any OpenAI-compatible provider, with your own key); optionally name and tag new screenshots automatically.
 
@@ -63,7 +65,7 @@ Press **Control + Command + A** to capture (**Shift + Option + A** in Snapok Dev
 | Move / resize selection | Drag inside / drag edges or handles |
 | Nudge selection | Arrow keys; `Shift` for 10-point steps |
 | Edit image | `⌘E` (release) / `⌥E` (development), after selecting a capture |
-| Select / move annotations | `V` |
+| Select / move annotations | `V` or the leftmost arrow button in the capture toolbar; click to select, drag to move |
 | Rectangle / ellipse / arrow | `R` / `O` / `A` |
 | Pen / mosaic / text | `P` / `M` / `T` |
 | Small / medium / large stroke or text | `1` / `2` / `3`; `[` / `]` to decrease / increase |
@@ -78,7 +80,7 @@ Press **Control + Command + A** to capture (**Shift + Option + A** in Snapok Dev
 | Reselect / cancel capture | Right-click / `Esc` |
 | Close image editor | `⌘W` |
 
-Tool shortcuts work after selecting a capture region and in the image editor. They do not switch tools while typing in a text field. During capture, press `Enter` or `Esc` to finish text input and return to the canvas; then tool shortcuts work again. Hover over a tool to see its shortcut.
+Tool shortcuts work after selecting a capture region and in the image editor. They do not switch tools while typing in a text field. During capture or image editing, press `Enter` or `Esc` to finish text input and return to the canvas; then tool shortcuts work again. Hover over a tool to see its shortcut.
 
 ### Scrolling capture
 
@@ -94,7 +96,7 @@ Rows that stay put while the rest scrolls, such as a toolbar or a message box, a
 
 ![Snapok image editor with a gradient background, annotation toolbar, and controls for padding, border, corner radius, and shadow](docs/background-editor-preview.png)
 
-Use the lower toolbar to annotate and the sidebar to frame your screenshot. Choose a gradient, desktop wallpaper, solid color, or custom background image; adjust padding (0–600 px per axis), border width (0–20 px) and color, corner radius (0–80 px), and shadow with a live preview. The pointer tool selects and moves annotations; double-click text to edit it.
+Use the lower toolbar to annotate and the sidebar to frame your screenshot. Choose a gradient, desktop wallpaper, solid color, or custom background image; adjust padding (0–600 px per axis), border width (0–20 px) and color, corner radius (0–80 px), and shadow with a live preview. The pointer tool selects and moves annotations. With the text tool, click the image to type directly; press Enter or click outside to finish. Drag existing text to move it, or double-click to edit it in place. Select the text tool or an existing text annotation to choose a font family, size in image pixels (px), and bold styling in the toolbar. Type a pixel size and press Enter or leave the field to apply it. The − / + buttons and scrolling over the number apply changes immediately. The selection border width in General settings uses the same control and supports 1–10 px. Out-of-range input shows the allowed range and the adjusted value. Text styles are preserved when saving, reopening, and exporting screenshots.
 
 Use **Copy Image** or **Save PNG** to export at the original pixel resolution while keeping the editor open. The **AI Tools** menu in the editor header recognizes text, masks sensitive information (undoable), translates, and answers questions about the screenshot.
 

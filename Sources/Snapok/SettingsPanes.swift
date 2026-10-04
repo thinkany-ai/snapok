@@ -33,22 +33,44 @@ class PageView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// A white rounded card holding a settings form, placed under the page title.
-    func addCard(_ content: NSView) {
+    func addCard(_ content: NSView, scrollable: Bool = false) {
         let card = CardView()
         content.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(content)
         card.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(card)
+        let host: NSView
+        if scrollable {
+            let scroll = NSScrollView()
+            scroll.drawsBackground = false
+            scroll.hasVerticalScroller = true
+            scroll.translatesAutoresizingMaskIntoConstraints = false
+            let document = SettingsDocumentView()
+            document.translatesAutoresizingMaskIntoConstraints = false
+            scroll.documentView = document
+            addSubview(scroll)
+            NSLayoutConstraint.activate([
+                scroll.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 28),
+                scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40),
+                scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
+                scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20),
+                document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
+            ])
+            host = document
+        } else {
+            host = self
+        }
+        host.addSubview(card)
         NSLayoutConstraint.activate([
-            card.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 28),
-            card.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40),
-            card.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -40),
+            card.topAnchor.constraint(equalTo: scrollable ? host.topAnchor : subtitleLabel.bottomAnchor, constant: scrollable ? 0 : 28),
+            card.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: scrollable ? 0 : 40),
+            card.trailingAnchor.constraint(lessThanOrEqualTo: host.trailingAnchor, constant: scrollable ? -16 : -40),
             card.widthAnchor.constraint(greaterThanOrEqualToConstant: 480),
             content.topAnchor.constraint(equalTo: card.topAnchor, constant: 24),
             content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 28),
             content.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -28),
             content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -24)
         ])
+        if scrollable { card.bottomAnchor.constraint(equalTo: host.bottomAnchor, constant: -12).isActive = true }
     }
 
     static func label(_ text: String, secondary: Bool = false) -> NSTextField {
@@ -66,6 +88,11 @@ class PageView: NSView {
         grid.rowAlignment = .firstBaseline
         return grid
     }
+}
+
+@MainActor
+private final class SettingsDocumentView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 /// Rounded card that follows light/dark appearance.
@@ -104,6 +131,13 @@ final class GeneralSettingsPane: PageView {
     private let retention = NSPopUpButton()
     private let language = NSPopUpButton()
     private let theme = NSPopUpButton()
+    private let captureColor = NSColorWell()
+    private let captureBorder = NSPopUpButton()
+    private let captureWidth = PixelNumberControl(value: 2, range: CaptureAppearance.borderWidthRange, label: L("Screenshot selection thickness", "截图选框粗细"))
+    private let capturePreview = CaptureAppearancePreview()
+    private let libraryLocation = NSTextField(labelWithString: "")
+    private let restoreLibraryLocation = NSButton(title: L("Restore Default", "恢复默认"), target: nil, action: nil)
+    private let operationFeedback = WindowFeedback()
     private let screenCaptureStatus = NSTextField(labelWithString: "")
     private let enableScreenCapture = NSButton(title: L("Authorize…", "授权…"), target: nil, action: nil)
     private let screenCaptureSettings = NSButton(title: L("System Settings…", "系统设置…"), target: nil, action: nil)
@@ -117,6 +151,25 @@ final class GeneralSettingsPane: PageView {
         theme.target = self
         theme.action = #selector(saveTheme)
         theme.setAccessibilityLabel(L("Theme", "主题"))
+        captureColor.colorWellStyle = .minimal
+        captureColor.supportsAlpha = false
+        captureColor.target = self
+        captureColor.action = #selector(saveCaptureAppearance)
+        captureColor.setAccessibilityLabel(L("Screenshot selection color", "截图选框颜色"))
+        captureColor.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        captureColor.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        captureBorder.addItems(withTitles: CaptureBorderStyle.allCases.map(\.title))
+        captureBorder.target = self
+        captureBorder.action = #selector(saveCaptureAppearance)
+        captureBorder.setAccessibilityLabel(L("Screenshot selection style", "截图选框线条样式"))
+        captureWidth.onChange = { [weak self] _ in self?.saveCaptureAppearance() }
+        captureWidth.setAccessibilityLabel(L("Screenshot selection thickness", "截图选框粗细"))
+        captureWidth.toolTip = L("Border thickness", "边框粗细")
+        capturePreview.setAccessibilityLabel(L("Screenshot selection preview", "截图选框预览"))
+        let captureReset = NSButton(title: L("Restore Default", "恢复默认"), target: self, action: #selector(resetCaptureAppearance))
+        captureReset.bezelStyle = .rounded
+        let captureAppearanceRow = NSStackView(views: [captureColor, captureBorder, captureWidth, capturePreview, captureReset])
+        captureAppearanceRow.spacing = 10
         language.addItems(withTitles: ["English", "简体中文"])
         language.selectItem(at: AppLanguage.allCases.firstIndex(of: AppLanguage.saved()) ?? 0)
         language.target = self
@@ -130,6 +183,18 @@ final class GeneralSettingsPane: PageView {
         openFolder.bezelStyle = .rounded
         let clear = NSButton(title: L("Clear Library…", "清空截图库…"), target: self, action: #selector(clearHistory))
         clear.bezelStyle = .rounded
+        let changeFolder = NSButton(title: L("Change Folder…", "更改文件夹…"), target: self, action: #selector(changeHistoryFolder))
+        changeFolder.bezelStyle = .rounded
+        restoreLibraryLocation.bezelStyle = .rounded
+        restoreLibraryLocation.target = self
+        restoreLibraryLocation.action = #selector(resetHistoryFolder)
+        restoreLibraryLocation.setAccessibilityLabel(L("Restore default library location", "恢复默认截图库位置"))
+        restoreLibraryLocation.toolTip = L("Use the default folder for new screenshots. Current screenshots stay in their existing folder.", "新截图使用默认目录，当前截图仍保留在原目录。")
+        libraryLocation.font = .systemFont(ofSize: 12)
+        libraryLocation.textColor = .secondaryLabelColor
+        libraryLocation.lineBreakMode = .byTruncatingMiddle
+        libraryLocation.isSelectable = true
+        libraryLocation.widthAnchor.constraint(equalToConstant: 360).isActive = true
         enableScreenCapture.bezelStyle = .rounded
         enableScreenCapture.target = self
         enableScreenCapture.action = #selector(requestScreenCapture)
@@ -159,6 +224,7 @@ final class GeneralSettingsPane: PageView {
         addCard(Self.form([
             [Self.label(L("Language", "语言")), language],
             [Self.label(L("Theme", "主题")), theme],
+            [Self.label(L("Screenshot selection", "截图选框")), captureAppearanceRow],
             [Self.label(L("Screenshot shortcut", "截图快捷键")), ShortcutRecorder()],
             [Self.label(L("Screenshot access", "截图权限")), screenCaptureRow],
             [NSGridCell.emptyContentView, screenCaptureHint],
@@ -168,8 +234,10 @@ final class GeneralSettingsPane: PageView {
             [Self.label(L("Keep screenshots", "保留时间")), retention],
             [NSGridCell.emptyContentView, Self.label(L("Screenshots older than this period are deleted automatically.", "超过保留时间的截图会自动删除。"), secondary: true)],
             [Self.label(L("Library", "截图库")), NSStackView(views: [openFolder, clear])],
-            [NSGridCell.emptyContentView, Self.label(L("Screenshots are stored only on this Mac.", "截图只保存在这台 Mac 上。"), secondary: true)]
-        ]))
+            [Self.label(L("Storage location", "存储位置")), NSStackView(views: [changeFolder, restoreLibraryLocation])],
+            [NSGridCell.emptyContentView, libraryLocation],
+            [NSGridCell.emptyContentView, Self.label(L("New screenshots use this folder. Copying existing screenshots is optional.", "新截图保存到此文件夹，旧截图可选择是否复制。"), secondary: true)]
+        ]), scrollable: true)
         load()
     }
 
@@ -179,8 +247,10 @@ final class GeneralSettingsPane: PageView {
         refreshScreenCaptureStatus()
         refreshSnappingStatus()
         theme.selectItem(at: AppAppearance.allCases.firstIndex(of: AppAppearance.saved()) ?? 0)
+        loadCaptureAppearance()
         autoSave.state = AppSettings.autoSave ? .on : .off
         retention.selectItem(at: retentionOptions.firstIndex { $0.days == AppSettings.retentionDays } ?? 1)
+        refreshLibraryLocation()
     }
 
     @objc private func refreshScreenCaptureStatus() {
@@ -222,6 +292,29 @@ final class GeneralSettingsPane: PageView {
         AppAppearance.allCases[theme.indexOfSelectedItem].select()
     }
 
+    private func loadCaptureAppearance() {
+        let appearance = CaptureAppearance.load()
+        captureColor.color = appearance.nsColor
+        captureBorder.selectItem(at: CaptureBorderStyle.allCases.firstIndex(of: appearance.borderStyle) ?? 0)
+        captureWidth.setValue(appearance.borderWidth)
+        capturePreview.appearanceSettings = appearance
+    }
+
+    @objc private func saveCaptureAppearance() {
+        guard CaptureBorderStyle.allCases.indices.contains(captureBorder.indexOfSelectedItem) else { return }
+        var appearance = CaptureAppearance.load()
+        appearance.setColor(captureColor.color)
+        appearance.borderStyle = CaptureBorderStyle.allCases[captureBorder.indexOfSelectedItem]
+        appearance.borderWidth = captureWidth.value
+        appearance.save()
+        capturePreview.appearanceSettings = appearance
+    }
+
+    @objc private func resetCaptureAppearance() {
+        CaptureAppearance().save()
+        loadCaptureAppearance()
+    }
+
     @objc private func saveLanguage() {
         guard AppLanguage.allCases.indices.contains(language.indexOfSelectedItem) else { return }
         AppLanguage.switchTo(AppLanguage.allCases[language.indexOfSelectedItem])
@@ -236,6 +329,51 @@ final class GeneralSettingsPane: PageView {
 
     @objc private func openHistoryFolder() {
         NSWorkspace.shared.open(HistoryStore.shared.root)
+    }
+
+    private func refreshLibraryLocation() {
+        libraryLocation.stringValue = HistoryStore.shared.root.path
+        libraryLocation.toolTip = libraryLocation.stringValue
+        restoreLibraryLocation.isEnabled = HistoryStore.shared.root.resolvingSymlinksInPath().standardizedFileURL != HistoryStore.defaultRoot.resolvingSymlinksInPath().standardizedFileURL
+    }
+
+    @objc private func resetHistoryFolder() {
+        do {
+            try HistoryStore.shared.restoreDefaultLocation()
+            refreshLibraryLocation()
+            operationFeedback.show(L("Default library location restored.", "已恢复默认截图库位置。"), in: window)
+        } catch {
+            operationFeedback.showError(L("Could not restore the library folder: ", "无法恢复截图库位置：") + error.localizedDescription, in: window)
+        }
+    }
+
+    @objc private func changeHistoryFolder() {
+        guard let window else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+        panel.prompt = L("Use This Folder", "使用此文件夹")
+        panel.message = L("New screenshots will be saved here. The library displays the selected folder; previous screenshots remain in their original folder unless you copy them.", "新截图将保存到这里，截图库显示所选文件夹的内容。不复制时，旧截图仍保留在原目录。")
+        let copyExisting = NSButton(checkboxWithTitle: L("Also copy existing screenshots", "同时复制现有截图"), target: nil, action: nil)
+        copyExisting.state = .off
+        copyExisting.sizeToFit()
+        panel.accessoryView = copyExisting
+        panel.isAccessoryViewDisclosed = true
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let destination = panel.url else { return }
+            do {
+                try HistoryStore.shared.changeLocation(to: destination, copyExisting: copyExisting.state == .on)
+                self?.refreshLibraryLocation()
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = L("Could not change the library folder", "无法更改截图库位置")
+                alert.informativeText = error.localizedDescription
+                alert.beginSheetModal(for: window)
+            }
+        }
     }
 
     @objc private func clearHistory() {

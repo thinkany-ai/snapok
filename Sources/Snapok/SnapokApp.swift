@@ -560,6 +560,7 @@ struct Annotation {
     var text: String = ""
     var color: NSColor
     var sizeLevel: Int
+    var textStyle: AnnotationTextStyle? = nil
 
     var lineWidth: CGFloat {
         Style.lineWidth(for: kind, level: sizeLevel)
@@ -761,6 +762,7 @@ final class PreferencesView: NSView {
 
 @MainActor
 final class CaptureView: NSView, NSTextFieldDelegate {
+    let captureAppearance = CaptureAppearance.load()
     weak var windowRef: CaptureWindow?
 
     private let screenFrame: CGRect
@@ -788,13 +790,37 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     private var toolFocusHighlighted = false
     private var toolFocusGeneration = 0
     private var selectedColor: NSColor = Style.colors[0]
+    private var textStyle = AnnotationTextStyle()
+    private let fontSizeControl = PixelNumberControl(value: 40, range: 1...288, label: L("Font size", "字号"))
+    private var textControlsReady = false
+    private var syncingTextControls = false
+    override var needsDisplay: Bool {
+        didSet { if needsDisplay { syncFontSizeControl() } }
+    }
+    private func syncFontSizeControl() {
+        guard textControlsReady, !syncingTextControls else { return }
+        syncingTextControls = true
+        defer { syncingTextControls = false }
+        guard let selection, usesTextStyle, !isAdjustingSelection else {
+            fontSizeControl.isHidden = true
+            return
+        }
+        let panel = toolbarGeometry(for: selection).options
+        fontSizeControl.frame = CGRect(x: panel.minX + 146, y: panel.minY + 3, width: 112, height: 26)
+        fontSizeControl.setValue(Int(textStyle.pixelSize(at: pixelScale).rounded()))
+        fontSizeControl.isHidden = false
+        fontSizeControl.layoutSubtreeIfNeeded()
+    }
+    private var usesTextStyle: Bool {
+        selectedTool == .text || selectedAnnotationIndex.map { annotations.indices.contains($0) && annotations[$0].kind == .text } == true
+    }
     private var sizeLevel = 1
     private var annotations: [Annotation] = []
     private var draftAnnotation: Annotation?
     private var dragState: DragState = .idle
     private var selectedAnnotationIndex: Int?
     private var activeTextField: NSTextField?
-    var isEditingText: Bool { activeTextField != nil }
+    var isEditingText: Bool { activeTextField != nil || fontSizeControl.isEditing }
     private var editingTextIndex: Int?
 
     private var toolbarButtons: [(action: ToolbarAction, rect: CGRect)] = []
@@ -812,6 +838,20 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         let localBounds = CGRect(origin: .zero, size: screen.frame.size)
         super.init(frame: localBounds)
+        fontSizeControl.appearance = NSAppearance(named: .aqua)
+        fontSizeControl.isHidden = true
+        fontSizeControl.onChange = { [weak self] value in
+            guard let self else { return }
+            self.textStyle.setPixelSize(CGFloat(value), scale: self.pixelScale)
+            self.applyStyleToSelection()
+            self.needsDisplay = true
+        }
+        fontSizeControl.onEndEditing = { [weak self] in
+            guard let self else { return }
+            self.window?.makeFirstResponder(self)
+        }
+        addSubview(fontSizeControl)
+        textControlsReady = true
     }
 
     required init?(coder: NSCoder) {
@@ -913,19 +953,15 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     }
 
     private func drawHoverFrame(_ rect: CGRect) {
-        Style.accent.setStroke()
-        let path = NSBezierPath(rect: rect.insetBy(dx: 1.5, dy: 1.5))
-        path.lineWidth = 3
-        path.stroke()
+        let width = CGFloat(captureAppearance.borderWidth) / pixelScale
+        captureAppearance.stroke(rect.insetBy(dx: width / 2, dy: width / 2), width: width)
     }
 
     private func drawSelectionFrame(_ rect: CGRect) {
-        Style.accent.setStroke()
-        let path = NSBezierPath(rect: rect.insetBy(dx: -0.5, dy: -0.5))
-        path.lineWidth = toolFocusHighlighted ? 3 : 1
-        path.stroke()
+        let width = CGFloat(toolFocusHighlighted ? max(3, captureAppearance.borderWidth) : captureAppearance.borderWidth) / pixelScale
+        captureAppearance.stroke(rect.insetBy(dx: -width / 2, dy: -width / 2), width: width)
 
-        Style.accent.setFill()
+        captureAppearance.nsColor.setFill()
         for handle in SelectionHandle.allCases {
             NSBezierPath(rect: handleRect(for: handle, in: rect)).fill()
         }
@@ -1019,7 +1055,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         drawScreenRegion(source, into: box)
 
         let pixel = max(1, boxSize / (sourceSize * pixelScale))
-        Style.accent.withAlphaComponent(0.45).setFill()
+        captureAppearance.nsColor.withAlphaComponent(0.45).setFill()
         CGRect(x: box.minX, y: box.midY - pixel / 2, width: box.width, height: pixel).fill()
         CGRect(x: box.midX - pixel / 2, y: box.minY, width: pixel, height: box.height).fill()
 
@@ -1136,14 +1172,11 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     // MARK: Toolbar
 
     private var toolbarItems: [ToolbarItem] {
-        ToolKind.allCases.map { ToolbarItem.button(.tool($0)) }
+        [.button(.select)] + ToolKind.allCases.map { ToolbarItem.button(.tool($0)) }
             + [.separator, .button(.undo), .button(.pin), .button(.save), .separator, .button(.scroll), .button(.editImage), .button(.cancel), .button(.done)]
     }
 
-    private func drawToolbar(for selection: CGRect) {
-        toolbarButtons = []
-        toolbarPanels = []
-
+    private func toolbarGeometry(for selection: CGRect) -> (bar: CGRect, options: CGRect, below: Bool) {
         let buttonSize: CGFloat = 30
         let padding: CGFloat = 5
         let separatorWidth: CGFloat = 13
@@ -1175,6 +1208,21 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         }
 
         let bar = CGRect(x: x, y: barY, width: barWidth, height: barHeight)
+        let width = optionsWidth
+        let optionsX = min(max(bar.minX, bounds.minX + 4), bounds.maxX - width - 4)
+        let optionsY = optionsBelowBar ? bar.minY - optionsGap - optionsHeight : bar.maxY + optionsGap
+        return (bar, CGRect(x: optionsX, y: optionsY, width: width, height: optionsHeight), optionsBelowBar)
+    }
+
+    private func drawToolbar(for selection: CGRect) {
+        toolbarButtons = []
+        toolbarPanels = []
+        let buttonSize: CGFloat = 30
+        let padding: CGFloat = 5
+        let separatorWidth: CGFloat = 13
+        let geometry = toolbarGeometry(for: selection)
+        let bar = geometry.bar
+        let showsOptions = selectedTool != nil || selectedAnnotationIndex != nil
         drawPanel(bar)
 
         var cursorX = bar.minX + padding
@@ -1192,31 +1240,51 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             }
         }
 
-        if showsOptions {
-            let width = optionsWidth
-            let optionsX = min(max(bar.minX, bounds.minX + 4), bounds.maxX - width - 4)
-            let optionsY = optionsBelowBar ? bar.minY - optionsGap - optionsHeight : bar.maxY + optionsGap
-            drawOptions(in: CGRect(x: optionsX, y: optionsY, width: width, height: optionsHeight))
-        }
-
-        drawTooltip(near: bar, below: !(optionsBelowBar && showsOptions))
+        if showsOptions { drawOptions(in: geometry.options) }
+        drawTooltip(near: bar, below: !(geometry.below && showsOptions))
     }
 
     private var optionsWidth: CGFloat {
-        12 + CGFloat(Style.sizeLevels) * 28 + 13 + CGFloat(Style.colors.count) * 26
+        12 + (usesTextStyle ? 288 : CGFloat(Style.sizeLevels) * 28) + 13 + CGFloat(Style.colors.count) * 26
     }
 
     private func drawOptions(in panel: CGRect) {
         drawPanel(panel)
 
         var cursorX = panel.minX + 6
-        for level in 0..<Style.sizeLevels {
-            let rect = CGRect(x: cursorX, y: panel.minY + 2, width: 28, height: 28)
-            let diameter: CGFloat = [6, 10, 14][level]
-            (level == sizeLevel ? Style.accent : NSColor(white: 0.55, alpha: 1)).setFill()
-            NSBezierPath(ovalIn: CGRect(x: rect.midX - diameter / 2, y: rect.midY - diameter / 2, width: diameter, height: diameter)).fill()
-            toolbarButtons.append((.size(level), rect))
-            cursorX += 28
+        if usesTextStyle {
+            NSAppearance(named: .aqua)?.performAsCurrentDrawingAppearance {
+                for (action, width, title) in [(ToolbarAction.fontFamily, CGFloat(140), textStyle.family ?? L("System Font", "系统字体"))] {
+                    let rect = CGRect(x: cursorX, y: panel.minY + 3, width: width - 4, height: 26)
+                    let cell = NSPopUpButtonCell(textCell: title, pullsDown: false)
+                    cell.addItem(withTitle: title)
+                    cell.bezelStyle = .rounded
+                    cell.controlSize = .regular
+                    cell.font = .systemFont(ofSize: 13)
+                    cell.draw(withFrame: rect, in: self)
+                    toolbarButtons.append((action, rect))
+                    cursorX += width
+                }
+                cursorX += 116
+                let rect = CGRect(x: cursorX, y: panel.minY + 3, width: 32, height: 26)
+                let bold = NSButtonCell(textCell: "B")
+                bold.setButtonType(.toggle)
+                bold.bezelStyle = .rounded
+                bold.font = .boldSystemFont(ofSize: 13)
+                bold.state = textStyle.bold ? .on : .off
+                bold.draw(withFrame: rect, in: self)
+                toolbarButtons.append((.textBold, rect))
+                cursorX += 32
+            }
+        } else {
+            for level in 0..<Style.sizeLevels {
+                let rect = CGRect(x: cursorX, y: panel.minY + 2, width: 28, height: 28)
+                let diameter: CGFloat = [6, 10, 14][level]
+                (level == sizeLevel ? Style.accent : NSColor(white: 0.55, alpha: 1)).setFill()
+                NSBezierPath(ovalIn: CGRect(x: rect.midX - diameter / 2, y: rect.midY - diameter / 2, width: diameter, height: diameter)).fill()
+                toolbarButtons.append((.size(level), rect))
+                cursorX += 28
+            }
         }
 
         NSColor(white: 0, alpha: 0.12).setFill()
@@ -1260,6 +1328,8 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         var isActive = false
         if case .tool(let tool) = action {
             isActive = selectedTool == tool
+        } else if action == .select {
+            isActive = selectedTool == nil
         }
         let isEnabled = action != .undo || !annotations.isEmpty
 
@@ -1329,6 +1399,15 @@ final class CaptureView: NSView, NSTextFieldDelegate {
 
     private func perform(_ action: ToolbarAction) {
         switch action {
+        case .fontFamily:
+            showTextStyleMenu(action)
+        case .textBold:
+            textStyle.bold.toggle()
+            applyStyleToSelection()
+        case .select:
+            selectedTool = nil
+            selectedAnnotationIndex = nil
+            highlightToolFocus()
         case .tool(let tool):
             selectedTool = selectedTool == tool ? nil : tool
             selectedAnnotationIndex = nil
@@ -1349,11 +1428,36 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             finish(.copy)
         case .size(let level):
             sizeLevel = level
+            textStyle.pointSize = Style.lineWidth(for: .text, level: level)
             applyStyleToSelection()
         case .color(let index):
             selectedColor = Style.colors[index]
             applyStyleToSelection()
         }
+        updateCursor()
+        needsDisplay = true
+    }
+
+    private func showTextStyleMenu(_ action: ToolbarAction) {
+        guard let rect = toolbarButtons.first(where: { $0.action == action })?.rect else { return }
+        let menu = NSMenu()
+        if action == .fontFamily {
+            let families = NSFontManager.shared.availableFontFamilies.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            for family in [""] + families {
+                let item = NSMenuItem(title: family.isEmpty ? L("System Font", "系统字体") : family, action: #selector(pickTextFamily(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = family
+                item.state = (textStyle.family ?? "") == family ? .on : .off
+                menu.addItem(item)
+            }
+        }
+        menu.popUp(positioning: nil, at: CGPoint(x: rect.minX, y: rect.minY), in: self)
+    }
+
+    @objc private func pickTextFamily(_ item: NSMenuItem) {
+        let family = item.representedObject as? String ?? ""
+        textStyle.family = family.isEmpty ? nil : family
+        applyStyleToSelection()
         needsDisplay = true
     }
 
@@ -1386,12 +1490,16 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if fontSizeControl.isEditing {
+            fontSizeControl.commitInput()
+            window?.makeFirstResponder(self)
+        }
         let point = convert(event.locationInWindow, from: nil)
         mouseLocation = point
 
         if activeTextField != nil {
             commitActiveTextField()
-            if selectedTool == .text, toolbarAction(at: point) == nil {
+            if selectedTool == .text, toolbarAction(at: point) == nil, event.clickCount < 2 {
                 needsDisplay = true
                 return
             }
@@ -1411,8 +1519,8 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             return
         }
 
-        if event.clickCount == 2, selection.contains(point), selectedTool == nil {
-            if let index = hitAnnotation(at: point), annotations[index].kind == .text {
+        if event.clickCount == 2, selection.contains(point) {
+            if let index = hitAnnotation(at: point, matchingTool: false), annotations[index].kind == .text {
                 beginTextEdit(index: index)
             } else {
                 finish(.copy)
@@ -1428,13 +1536,14 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         }
 
         if let index = hitAnnotation(at: point) {
-            if selectedTool == .text, annotations[index].kind == .text {
+            if selectedTool == .text, annotations[index].kind == .text, event.clickCount == 2 {
                 beginTextEdit(index: index)
                 return
             }
             selectedAnnotationIndex = index
             selectedColor = annotations[index].color
             sizeLevel = annotations[index].sizeLevel
+            if annotations[index].kind == .text { textStyle = annotations[index].effectiveTextStyle }
             dragState = .movingAnnotation(index: index, lastPoint: point)
             needsDisplay = true
             return
@@ -1682,7 +1791,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
 
     @discardableResult
     func handleAnnotationShortcut(_ event: NSEvent) -> Bool {
-        guard selection != nil, activeTextField == nil,
+        guard selection != nil, !isEditingText,
               case .idle = dragState,
               event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return false }
         if let tool = ToolKind.matchingShortcut(event) {
@@ -1691,8 +1800,8 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         } else {
             switch Int(event.keyCode) {
             case kVK_ANSI_V:
-                selectedTool = nil
-                selectedAnnotationIndex = nil
+                perform(.select)
+                return true
             case kVK_ANSI_1: perform(.size(0))
             case kVK_ANSI_2: perform(.size(1))
             case kVK_ANSI_3: perform(.size(2))
@@ -1773,7 +1882,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     }
 
     private func textFont(level: Int) -> NSFont {
-        .systemFont(ofSize: Style.lineWidth(for: .text, level: level), weight: .medium)
+        textStyle.font
     }
 
     private func textFieldHeight(for font: NSFont) -> CGFloat {
@@ -1808,6 +1917,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         let annotation = annotations[index]
         selectedColor = annotation.color
         sizeLevel = annotation.sizeLevel
+        textStyle = annotation.effectiveTextStyle
         selectedAnnotationIndex = nil
         editingTextIndex = index
         let height = textFieldHeight(for: textFont(level: sizeLevel))
@@ -1833,7 +1943,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
-        commitActiveTextField()
+        commitActiveTextField(restoreFocus: false)
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -1846,13 +1956,14 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         return false
     }
 
-    private func commitActiveTextField() {
+    private func commitActiveTextField(restoreFocus: Bool = true) {
         guard let field = activeTextField else { return }
         activeTextField = nil
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let font = field.font ?? textFont(level: sizeLevel)
         field.removeFromSuperview()
 
+        selectedAnnotationIndex = nil
         if text.isEmpty {
             if let index = editingTextIndex, annotations.indices.contains(index) {
                 annotations.remove(at: index)
@@ -1860,15 +1971,17 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         } else {
             let size = (text as NSString).size(withAttributes: [.font: font])
             let rect = CGRect(x: field.frame.minX + 2, y: field.frame.minY + 1, width: ceil(size.width), height: ceil(size.height))
-            let annotation = Annotation(kind: .text, rect: rect, points: [rect.origin], text: text, color: selectedColor, sizeLevel: sizeLevel)
+            let annotation = Annotation(kind: .text, rect: rect, points: [rect.origin], text: text, color: selectedColor, sizeLevel: sizeLevel, textStyle: textStyle)
             if let index = editingTextIndex, annotations.indices.contains(index) {
                 annotations[index] = annotation
+                selectedAnnotationIndex = index
             } else {
                 annotations.append(annotation)
+                selectedAnnotationIndex = annotations.count - 1
             }
         }
         editingTextIndex = nil
-        window?.makeFirstResponder(self)
+        if restoreFocus { window?.makeFirstResponder(self) }
         needsDisplay = true
     }
 
@@ -1882,6 +1995,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         annotations[index].color = selectedColor
         annotations[index].sizeLevel = sizeLevel
         if annotations[index].kind == .text {
+            annotations[index].textStyle = textStyle
             let size = (annotations[index].text as NSString).size(withAttributes: [.font: textFont(level: sizeLevel)])
             annotations[index].rect.size = CGSize(width: ceil(size.width), height: ceil(size.height))
         }
@@ -1902,10 +2016,10 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         needsDisplay = true
     }
 
-    private func hitAnnotation(at point: CGPoint) -> Int? {
+    private func hitAnnotation(at point: CGPoint, matchingTool: Bool = true) -> Int? {
         annotations.indices.reversed().first { index in
             let annotation = annotations[index]
-            if let tool = selectedTool, tool != annotation.kind || tool == .pen || tool == .mosaic {
+            if matchingTool, let tool = selectedTool, tool != annotation.kind || tool == .pen || tool == .mosaic {
                 return false
             }
             return annotation.hitTest(point)
@@ -2011,6 +2125,9 @@ enum ToolbarItem {
 }
 
 enum ToolbarAction: Equatable {
+    case select
+    case fontFamily
+    case textBold
     case scroll
     case editImage
     case tool(ToolKind)
@@ -2024,6 +2141,7 @@ enum ToolbarAction: Equatable {
 
     var symbol: String? {
         switch self {
+        case .select: return "cursorarrow"
         case .tool(let tool): return tool.symbol
         case .scroll: return "arrow.up.and.down.text.horizontal"
         case .editImage: return "square.and.pencil"
@@ -2032,12 +2150,15 @@ enum ToolbarAction: Equatable {
         case .save: return "square.and.arrow.down"
         case .cancel: return "xmark"
         case .done: return "checkmark"
-        case .size, .color: return nil
+        case .size, .color, .fontFamily, .textBold: return nil
         }
     }
 
     var title: String? {
         switch self {
+        case .fontFamily: return L("Font", "字体")
+        case .textBold: return L("Bold", "加粗")
+        case .select: return L("Select / Move (V)", "选择 / 移动（V）")
         case .tool(let tool): return "\(tool.title) (\(tool.shortcut))"
         case .scroll: return L("Scrolling Capture (⌘L)", "长截图（⌘L）")
         case .editImage: return L("Edit Image (\(AppChannel.editImageHotKey.symbol))", "编辑图片（\(AppChannel.editImageHotKey.symbol)）")
@@ -2204,7 +2325,7 @@ enum AnnotationRenderer {
 
     private static func drawText(_ annotation: Annotation) {
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: annotation.lineWidth, weight: .medium),
+            .font: annotation.textFont,
             .foregroundColor: annotation.color
         ]
         annotation.text.draw(at: annotation.rect.origin, withAttributes: attrs)

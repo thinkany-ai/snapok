@@ -7,11 +7,120 @@ struct EditorCanvasTests {
     static func main() throws {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
+        let appearanceSuite = "SnapokCaptureAppearance-" + UUID().uuidString
+        let appearanceDefaults = UserDefaults(suiteName: appearanceSuite)!
+        defer { appearanceDefaults.removePersistentDomain(forName: appearanceSuite) }
+        precondition(CaptureAppearance.load(in: appearanceDefaults) == CaptureAppearance())
+        var customAppearance = CaptureAppearance()
+        customAppearance.setColor(NSColor(srgbRed: 0, green: 1, blue: 1, alpha: 0.2))
+        customAppearance.borderStyle = .dotted
+        customAppearance.borderWidth = 5
+        customAppearance.save(in: appearanceDefaults)
+        precondition(CaptureAppearance.load(in: appearanceDefaults) == customAppearance)
+        precondition(CaptureAppearance.load(in: appearanceDefaults).nsColor.alphaComponent == 1)
+        appearanceDefaults.set(Data("{\"color\":[2,-1,0.5],\"borderStyle\":\"dashed\"}".utf8), forKey: CaptureAppearance.key)
+        precondition(CaptureAppearance.load(in: appearanceDefaults).color == [1, 0, 0.5])
+        precondition(CaptureAppearance.load(in: appearanceDefaults).borderWidth == 2, "Older preferences must preserve color/style and use default thickness")
+        appearanceDefaults.set(Data("{\"color\":[0,1,1],\"borderStyle\":\"dotted\",\"borderWidth\":99}".utf8), forKey: CaptureAppearance.key)
+        precondition(CaptureAppearance.load(in: appearanceDefaults).borderWidth == 10)
+        customAppearance.borderWidth = 10
+        customAppearance.save(in: appearanceDefaults)
+        precondition(CaptureAppearance.load(in: appearanceDefaults).borderWidth == 10, "Border thickness must persist across launches")
+        customAppearance.borderWidth = 999
+        customAppearance.save(in: appearanceDefaults)
+        precondition(CaptureAppearance.load(in: appearanceDefaults).borderWidth == 10)
+        customAppearance.borderWidth = 5
+        appearanceDefaults.set(Data("{\"color\":[1],\"borderStyle\":\"dotted\"}".utf8), forKey: CaptureAppearance.key)
+        precondition(CaptureAppearance.load(in: appearanceDefaults).color == CaptureAppearance().color)
+        appearanceDefaults.set(Data("{\"color\":[1,1,1],\"borderStyle\":\"unknown\"}".utf8), forKey: CaptureAppearance.key)
+        precondition(CaptureAppearance.load(in: appearanceDefaults) == CaptureAppearance())
+        var renderedStyles: [Data] = []
+        let appearanceSample = NSView(frame: CGRect(x: 0, y: 0, width: 420, height: 150))
+        let appearanceWindow = NSWindow(contentRect: appearanceSample.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        appearanceWindow.contentView = appearanceSample
+        for (index, style) in CaptureBorderStyle.allCases.enumerated() {
+            let preview = CaptureAppearancePreview(frame: CGRect(x: index * 140, y: 20, width: 130, height: 50))
+            customAppearance.borderStyle = style
+            preview.appearanceSettings = customAppearance
+            appearanceSample.addSubview(preview)
+            let rep = preview.bitmapImageRepForCachingDisplay(in: preview.bounds)!
+            preview.cacheDisplay(in: preview.bounds, to: rep)
+            renderedStyles.append(rep.representation(using: .png, properties: [:])!)
+        }
+        precondition(Set(renderedStyles).count == 3, "Solid, dashed and dotted borders must render differently")
+        var renderedWidths: [Data] = []
+        for (index, width) in [1, 3, 5].enumerated() {
+            let preview = CaptureAppearancePreview(frame: CGRect(x: index * 140, y: 80, width: 130, height: 50))
+            customAppearance.borderStyle = .solid
+            customAppearance.borderWidth = width
+            preview.appearanceSettings = customAppearance
+            appearanceSample.addSubview(preview)
+            let rep = preview.bitmapImageRepForCachingDisplay(in: preview.bounds)!
+            preview.cacheDisplay(in: preview.bounds, to: rep)
+            renderedWidths.append(rep.representation(using: .png, properties: [:])!)
+        }
+        precondition(Set(renderedWidths).count == 3, "Border thickness must change the rendered preview")
+        if CommandLine.arguments.count > 1 {
+            let rep = appearanceSample.bitmapImageRepForCachingDisplay(in: appearanceSample.bounds)!
+            appearanceSample.cacheDisplay(in: appearanceSample.bounds, to: rep)
+            try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1] + "-selection-styles.png"))
+        }
+        let general = GeneralSettingsPane()
+        let generalWindow = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 780, height: 620), styleMask: [.borderless], backing: .buffered, defer: false)
+        generalWindow.contentView = general
+        general.layoutSubtreeIfNeeded()
+        let settingsScroll = general.subviews.compactMap { $0 as? NSScrollView }.first!
+        precondition(settingsScroll.documentView!.frame.height > settingsScroll.contentView.bounds.height,
+                     "General settings must scroll so new appearance controls do not hide existing settings")
+        if CommandLine.arguments.count > 1 {
+            let rep = general.bitmapImageRepForCachingDisplay(in: general.bounds)!
+            general.cacheDisplay(in: general.bounds, to: rep)
+            try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1] + "-settings.png"))
+        }
         let context = CGContext(data: nil, width: 600, height: 400, bitsPerComponent: 8, bytesPerRow: 0,
                                 space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
         context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
         context.fill(CGRect(x: 0, y: 0, width: 600, height: 400))
         let image = NSImage(cgImage: context.makeImage()!, size: CGSize(width: 300, height: 200))
+        // Image editing types directly on the image, preserving original coordinates at any zoom.
+        let inline = BackgroundPreview(image: image)
+        let inlineWindow = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 720, height: 520), styleMask: [.borderless], backing: .buffered, defer: false)
+        inline.frame = inlineWindow.contentView!.bounds
+        inlineWindow.contentView = inline
+        func textClick(_ count: Int = 1) -> NSEvent {
+            NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 360, y: 260), modifierFlags: [], timestamp: 0,
+                              windowNumber: inlineWindow.windowNumber, context: nil, eventNumber: 1, clickCount: count, pressure: 1)!
+        }
+        inline.chooseTool(.text)
+        inline.mouseDown(with: textClick())
+        let inlineField = inline.subviews.compactMap { $0 as? NSTextField }.first!
+        precondition(inlineWindow.attachedSheet == nil && inlineWindow.firstResponder is NSTextView)
+        let inlineEditor = inlineWindow.firstResponder as! NSTextView
+        inlineEditor.string = "直接输入 Text"
+        inlineEditor.didChangeText()
+        let originalFontSize = inline.textStyle.pointSize
+        inline.setZoom(1.5)
+        precondition(abs(inlineField.font!.pointSize - originalFontSize * 3) < 0.001)
+        precondition(inline.control(inlineField, textView: inlineEditor, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        precondition(inline.annotations.count == 1 && inline.annotations[0].text == "直接输入 Text")
+        precondition(inline.annotations[0].textFont.pointSize == originalFontSize)
+        precondition(inline.annotations[0].rect.minX == 150)
+        let firstTextRect = inline.annotations[0].rect
+        inline.mouseDown(with: textClick(2))
+        let editingField = inline.subviews.compactMap { $0 as? NSTextField }.first!
+        editingField.stringValue = "Edited"
+        inline.mouseDown(with: textClick())
+        precondition(inline.annotations.count == 1 && inline.annotations[0].text == "Edited")
+        precondition(inline.annotations[0].rect.origin == firstTextRect.origin)
+        precondition(inline.subviews.compactMap { $0 as? NSTextField }.isEmpty)
+        inline.undoEdit()
+        precondition(inline.annotations[0].text == "直接输入 Text")
+        inline.mouseDown(with: textClick(2))
+        inline.subviews.compactMap { $0 as? NSTextField }.first!.stringValue = ""
+        inline.commitTextEditing()
+        precondition(inline.annotations.isEmpty)
+        inline.undoEdit()
+        precondition(inline.annotations.count == 1)
         let original = Annotation(kind: .rect, rect: CGRect(x: 30, y: 30, width: 100, height: 80), points: [], color: .red, sizeLevel: 1)
         let canvas = BackgroundPreview(image: image, annotations: [original])
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 720, height: 520), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -65,6 +174,97 @@ struct EditorCanvasTests {
         canvas.panBy(dx: 100000, dy: -100000)
         precondition(canvas.imagePoint(from: anchor) == clampedPoint, "Panning must stop at canvas edges")
         canvas.fitToWindow()
+        // Text stays draggable while the text tool is selected, including at Retina scale.
+        let textAnnotation = Annotation(kind: .text, rect: CGRect(x: 140, y: 90, width: 80, height: 30), points: [], text: "Move me", color: .red, sizeLevel: 1)
+        canvas.append([textAnnotation])
+        canvas.chooseTool(.text)
+        canvas.mouseDown(with: event(.leftMouseDown, 360, 260))
+        precondition(window.attachedSheet == nil, "Single-clicking text must not reopen the input dialog")
+        canvas.mouseDragged(with: event(.leftMouseDragged, 380, 270))
+        canvas.mouseUp(with: event(.leftMouseUp, 380, 270))
+        let movedText = canvas.annotations.last!
+        precondition(abs(movedText.rect.minX - textAnnotation.rect.minX - 20 / (scale * 2)) < 0.001)
+        precondition(abs(movedText.rect.minY - textAnnotation.rect.minY - 10 / (scale * 2)) < 0.001)
+        precondition(movedText.text == textAnnotation.text)
+        var pixelStyle = AnnotationTextStyle(pointSize: 20)
+        precondition(pixelStyle.pixelSize(at: 1) == 20 && pixelStyle.pixelSize(at: 2) == 40)
+        pixelStyle.setPixelSize(24, scale: 2)
+        precondition(pixelStyle.font.pointSize == 12 && pixelStyle.pixelSize(at: 2) == 24, "Pixel sizes must account for Retina export scale")
+        let oldStyle = try JSONDecoder().decode(AnnotationTextStyle.self, from: Data(#"{"family":"Helvetica","pointSize":20}"#.utf8))
+        precondition(!oldStyle.bold && oldStyle.pointSize == 20, "Previously saved fonts must load without a bold field")
+        let fontControls = AnnotationTextControls(frame: CGRect(x: 0, y: 0, width: 256, height: 26))
+        fontControls.update(oldStyle, pixelScale: 2)
+        let sizeInput = fontControls.subviews.compactMap { $0 as? PixelNumberControl }.first!
+        precondition(sizeInput.value == 40)
+        var changedStyle: AnnotationTextStyle?
+        fontControls.onChange = { changedStyle = $0 }
+        let fontControlWindow = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 288, height: 80), styleMask: [.borderless], backing: .buffered, defer: false)
+        fontControlWindow.contentView = fontControls
+        fontControls.layoutSubtreeIfNeeded()
+        fontControlWindow.makeFirstResponder(sizeInput.input)
+        let numberEditor = fontControlWindow.firstResponder as! NSTextView
+        numberEditor.string = "25"
+        numberEditor.didChangeText()
+        precondition(sizeInput.value == 40 && changedStyle == nil, "Typing must not apply a partial number")
+        func numberClick(at point: CGPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: fontControlWindow.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        }
+        let insideNumber = sizeInput.input.convert(CGPoint(x: 10, y: 10), to: nil)
+        var endedNumberEditing = false
+        sizeInput.onEndEditing = { endedNumberEditing = true }
+        sizeInput.finishEditingIfClickedOutside(numberClick(at: insideNumber))
+        precondition(sizeInput.isEditing && changedStyle == nil, "Clicking inside a number must preserve editing")
+        sizeInput.finishEditingIfClickedOutside(numberClick(at: CGPoint(x: 270, y: 65)))
+        precondition(!sizeInput.isEditing, "Clicking blank space must end editing without another focusable control")
+        precondition(endedNumberEditing, "Ending input with a click must restore the host's keyboard handling")
+        precondition(changedStyle?.pointSize == 12.5, "Typed pixel sizes must convert to drawing points")
+        sizeInput.adjust(by: 1)
+        precondition(changedStyle?.pointSize == 13, "Buttons must change font size by one pixel")
+        sizeInput.input.stringValue = "invalid"
+        sizeInput.commitInput()
+        precondition(sizeInput.value == 26 && sizeInput.input.stringValue == "26")
+        precondition(sizeInput.validationMessage != nil, "Invalid numbers must explain why the previous value was kept")
+        sizeInput.input.stringValue = "999"
+        sizeInput.commitInput()
+        precondition(sizeInput.value == 288, "Font size must clamp to its supported range")
+        precondition(sizeInput.validationMessage?.contains("288") == true, "Clamping must show the range and adjusted value")
+        let borderInput = PixelNumberControl(value: 2, range: CaptureAppearance.borderWidthRange, label: "Border")
+        borderInput.input.stringValue = "10"
+        borderInput.commitInput()
+        precondition(borderInput.value == 10 && borderInput.validationMessage == nil)
+        borderInput.input.stringValue = "200"
+        borderInput.commitInput()
+        precondition(borderInput.value == 10 && borderInput.validationMessage?.contains("10") == true)
+        borderInput.commitInput()
+        precondition(borderInput.validationMessage != nil, "A second end-editing callback must not immediately hide the warning")
+        borderInput.input.stringValue = "5"
+        borderInput.commitInput()
+        precondition(borderInput.value == 5 && borderInput.validationMessage == nil)
+        borderInput.adjust(by: -100)
+        precondition(borderInput.value == 1)
+        let wheel = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: 1, wheel2: 0, wheel3: 0)!
+        borderInput.input.scrollWheel(with: NSEvent(cgEvent: wheel)!)
+        precondition(borderInput.value == 2, "Scrolling over the numeric field must increment the value")
+        let boldButton = fontControls.subviews.compactMap { $0 as? NSButton }.first { $0.title == "B" }!
+        boldButton.performClick(nil)
+        precondition(changedStyle?.bold == true, "The bold button must update the text style")
+        let customTextStyle = AnnotationTextStyle(family: "Helvetica", pointSize: 36, bold: true)
+        canvas.textStyle = customTextStyle
+        canvas.applyStyle()
+        let styledText = canvas.annotations.last!
+        precondition(styledText.textStyle == customTextStyle && styledText.textFont.pointSize == 36)
+        precondition(NSFontManager.shared.traits(of: styledText.textFont).contains(.boldFontMask), "Text rendering must resolve a bold font")
+        precondition(styledText.rect.size == (styledText.text as NSString).size(withAttributes: [.font: styledText.textFont]), "Font changes must update text hit bounds")
+        let restoredText = try JSONDecoder().decode(Annotation.self, from: JSONEncoder().encode(styledText))
+        precondition(restoredText.textStyle == customTextStyle, "Font family and exact size must survive saving")
+        let legacyText = try JSONDecoder().decode(Annotation.self, from: JSONEncoder().encode(textAnnotation))
+        precondition(legacyText.textStyle == nil && legacyText.textFont.pointSize == 20, "Old screenshots must retain their original text size")
+        canvas.undoEdit()
+        precondition(canvas.annotations.last!.rect == movedText.rect && canvas.annotations.last!.textStyle == nil, "Undo must restore the previous font and bounds")
+        canvas.undoEdit()
+        precondition(canvas.annotations.last!.rect == textAnnotation.rect, "Undo must restore the text position")
+        canvas.undoEdit()
         func toolKey(_ code: Int, modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
             NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
                 windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "",
@@ -97,6 +297,30 @@ struct EditorCanvasTests {
         let editor = BackgroundEditorController(image: image, screen: nil, annotations: [original])
         let root = editor.window!.contentView!
         root.layoutSubtreeIfNeeded()
+        let operationFeedback = WindowFeedback()
+        let initialResponder = editor.window!.firstResponder
+        operationFeedback.show("Copied to clipboard.", in: editor.window)
+        root.layoutSubtreeIfNeeded()
+        let firstToast = root.subviews.compactMap { $0 as? FeedbackToast }.first!
+        precondition(firstToast.frame.height >= 44 && firstToast.frame.width <= root.bounds.width - 48)
+        precondition(firstToast.hitTest(.zero) == nil && editor.window!.firstResponder === initialResponder,
+                     "Feedback must not intercept canvas input or take keyboard focus")
+        if CommandLine.arguments.count > 1 {
+            let rep = root.bitmapImageRepForCachingDisplay(in: root.bounds)!
+            root.cacheDisplay(in: root.bounds, to: rep)
+            try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1] + "-feedback.png"))
+        }
+        operationFeedback.show("Image saved.", in: editor.window)
+        root.layoutSubtreeIfNeeded()
+        let toasts = root.subviews.compactMap { $0 as? FeedbackToast }
+        precondition(toasts.count == 1 && firstToast.superview == nil && toasts[0].messageLabel.stringValue == "Image saved.",
+                     "Repeated operations must replace rather than stack feedback")
+        operationFeedback.dismiss()
+        precondition(root.subviews.compactMap { $0 as? FeedbackToast }.isEmpty)
+        func editorPreview(in view: NSView) -> BackgroundPreview? {
+            if let preview = view as? BackgroundPreview { return preview }
+            return view.subviews.compactMap { editorPreview(in: $0) }.first
+        }
         if CommandLine.arguments.count > 1 {
             for (suffix, size) in [("", CGSize(width: 1060, height: 720)), ("-small", CGSize(width: 880, height: 618))] {
                 editor.window!.setContentSize(size)
@@ -105,6 +329,11 @@ struct EditorCanvasTests {
                 root.cacheDisplay(in: root.bounds, to: rep)
                 try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1] + suffix + ".png"))
             }
+            editorPreview(in: root)!.chooseTool(.text)
+            root.layoutSubtreeIfNeeded()
+            let rep = root.bitmapImageRepForCachingDisplay(in: root.bounds)!
+            root.cacheDisplay(in: root.bounds, to: rep)
+            try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1] + "-text.png"))
         }
         // Capture-window command routing must win over a menu shortcut using the same key.
         if let screen = NSScreen.main {
@@ -112,9 +341,9 @@ struct EditorCanvasTests {
             let delegate = CaptureEditDelegate()
             captureWindow.captureDelegate = delegate
             let view = captureWindow.contentView as! CaptureView
-            func captureEvent(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat) -> NSEvent {
+            func captureEvent(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat, clicks: Int = 1) -> NSEvent {
                 NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: y), modifierFlags: [], timestamp: 0,
-                    windowNumber: captureWindow.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+                    windowNumber: captureWindow.windowNumber, context: nil, eventNumber: 1, clickCount: clicks, pressure: 1)!
             }
             let colorClipboard = NSPasteboard.withUniqueName()
             defer { colorClipboard.releaseGlobally() }
@@ -146,9 +375,23 @@ struct EditorCanvasTests {
             view.mouseDown(with: captureEvent(.leftMouseDown, 150, 150))
             view.mouseDragged(with: captureEvent(.leftMouseDragged, 220, 190))
             view.mouseUp(with: captureEvent(.leftMouseUp, 220, 190))
+            for tool in ToolKind.allCases {
+                precondition(captureWindow.performKeyEquivalent(with: toolKey(Int(tool.shortcutKeyCode))))
+                view.mouseDown(with: captureEvent(.leftMouseDown, 280, 230, clicks: 2))
+                guard case .copy? = delegate.mode else { preconditionFailure("Double-click must finish an annotated capture while \(tool) remains selected") }
+                precondition(delegate.result?.annotations.count == 1 && delegate.result?.annotations.first?.kind == .rect,
+                             "Double-click completion must preserve the drawn rectangle without adding an annotation")
+                delegate.mode = nil
+                delegate.result = nil
+            }
             precondition(captureWindow.performKeyEquivalent(with: toolKey(kVK_ANSI_T)), "T must switch directly from rectangle to text")
+            let captureSize = view.subviews.compactMap { $0 as? PixelNumberControl }.first!
+            precondition(!captureSize.isHidden, "Text mode must show the editable size control before drawing")
+            captureWindow.makeFirstResponder(captureSize.input)
+            precondition(view.isEditingText && !view.handleAnnotationShortcut(toolKey(kVK_ANSI_3)), "Typing sizes must not trigger annotation shortcuts")
+            captureWindow.makeFirstResponder(view)
             if CommandLine.arguments.count > 1 {
-                let crop = CGRect(x: 0, y: 50, width: min(600, view.bounds.width), height: min(300, view.bounds.height - 50))
+                let crop = CGRect(x: 0, y: 0, width: min(600, view.bounds.width), height: min(350, view.bounds.height))
                 let rep = view.bitmapImageRepForCachingDisplay(in: crop)!
                 view.cacheDisplay(in: crop, to: rep)
                 try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1] + "-capture-mode.png"))
@@ -164,6 +407,17 @@ struct EditorCanvasTests {
             precondition(view.control(input, textView: fieldEditor, doCommandBy: #selector(NSResponder.insertNewline(_:))))
             precondition(!view.isEditingText && captureWindow.firstResponder === view, "Enter must finish text and restore canvas focus")
             precondition(delegate.mode == nil, "Finishing text must not finish the screenshot")
+            precondition(captureWindow.performKeyEquivalent(with: toolKey(kVK_ANSI_R)))
+            view.mouseDown(with: captureEvent(.leftMouseDown, 185, 170, clicks: 2))
+            precondition(view.isEditingText && delegate.mode == nil, "Double-clicking text must edit it even with a drawing tool selected")
+            let reopenedInput = view.subviews.compactMap { $0 as? NSTextField }.first!
+            precondition(view.control(reopenedInput, textView: captureWindow.firstResponder as! NSTextView,
+                                      doCommandBy: #selector(NSResponder.cancelOperation(_:))))
+            precondition(captureWindow.performKeyEquivalent(with: toolKey(kVK_ANSI_T)))
+            view.mouseDown(with: captureEvent(.leftMouseDown, 185, 170))
+            precondition(!view.isEditingText, "Single-clicking finished text must allow dragging while T is selected")
+            view.mouseDragged(with: captureEvent(.leftMouseDragged, 205, 180))
+            view.mouseUp(with: captureEvent(.leftMouseUp, 205, 180))
             precondition(captureWindow.performKeyEquivalent(with: toolKey(kVK_ANSI_R)), "Rectangle shortcut must work after text input")
             precondition(captureWindow.performKeyEquivalent(with: toolKey(kVK_ANSI_T)))
             view.mouseDown(with: captureEvent(.leftMouseDown, 240, 200))
@@ -172,11 +426,19 @@ struct EditorCanvasTests {
             precondition(view.control(emptyInput, textView: captureWindow.firstResponder as! NSTextView, doCommandBy: #selector(NSResponder.cancelOperation(_:))))
             precondition(!view.isEditingText && captureWindow.firstResponder === view, "Esc must leave text input without cancelling the screenshot")
             precondition(captureWindow.performKeyEquivalent(with: toolKey(kVK_ANSI_A)), "Arrow shortcut must work after Esc")
+            precondition(captureWindow.performKeyEquivalent(with: toolKey(kVK_ANSI_V)), "V must activate selection after a drawing tool")
+            precondition(ToolbarAction.select.symbol == "cursorarrow")
+            precondition(ToolbarAction.select.title?.contains("V") == true)
+            view.mouseDown(with: captureEvent(.leftMouseDown, 150, 155))
+            view.mouseDragged(with: captureEvent(.leftMouseDragged, 160, 155))
+            view.mouseUp(with: captureEvent(.leftMouseUp, 160, 155))
             view.copyCurrentContent(to: colorClipboard)
             guard case .copy? = delegate.mode else { preconditionFailure("Copy must finish the screenshot after a region is selected") }
             precondition(delegate.result?.globalRect.size == CGSize(width: 200, height: 150))
             precondition(delegate.result?.annotations.first?.kind == .rect, "R must enable rectangle drawing during capture")
+            precondition(delegate.result?.annotations.first?.rect.minX == 60, "Selection must move an existing rectangle regardless of the previous drawing tool")
             precondition(delegate.result?.annotations.last?.text == "RTAP", "T must create an editable text annotation after drawing a rectangle")
+            precondition(delegate.result?.annotations.last?.rect.minX == 100, "Dragging finished text must move it 20 points in the captured image")
             precondition(AppChannel.editImageHotKey(forRelease: true).menuModifiers == .command)
             precondition(AppChannel.editImageHotKey(forRelease: false).menuModifiers == .option)
             let edit = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: AppChannel.editImageHotKey.menuModifiers, timestamp: 0,

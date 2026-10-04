@@ -73,7 +73,7 @@ enum Keychain {
 
 extension Annotation: Codable {
     private enum CodingKeys: String, CodingKey {
-        case kind, rect, points, text, color, sizeLevel
+        case kind, rect, points, text, color, sizeLevel, textStyle
     }
 
     init(from decoder: Decoder) throws {
@@ -85,7 +85,8 @@ extension Annotation: Codable {
             points: try container.decode([CGPoint].self, forKey: .points),
             text: try container.decodeIfPresent(String.self, forKey: .text) ?? "",
             color: NSColor(srgbRed: rgba[0], green: rgba[1], blue: rgba[2], alpha: rgba.count > 3 ? rgba[3] : 1),
-            sizeLevel: try container.decode(Int.self, forKey: .sizeLevel)
+            sizeLevel: try container.decode(Int.self, forKey: .sizeLevel),
+            textStyle: try container.decodeIfPresent(AnnotationTextStyle.self, forKey: .textStyle)
         )
     }
 
@@ -98,6 +99,7 @@ extension Annotation: Codable {
         let srgb = color.usingColorSpace(.sRGB) ?? .systemRed
         try container.encode([srgb.redComponent, srgb.greenComponent, srgb.blueComponent, srgb.alphaComponent], forKey: .color)
         try container.encode(sizeLevel, forKey: .sizeLevel)
+        try container.encodeIfPresent(textStyle, forKey: .textStyle)
     }
 }
 
@@ -134,23 +136,97 @@ final class HistoryStore {
     static let shared = HistoryStore()
     static let didChange = Notification.Name("SnapokHistoryDidChange")
 
-    let root: URL
+    static let locationKey = "history.location"
+    static var defaultRoot: URL { AppChannel.supportDirectory.appendingPathComponent("History", isDirectory: true) }
+    private(set) var root: URL
+    private let defaults: UserDefaults
     private(set) var items: [HistoryItem] = []
     private var thumbnails: [UUID: NSImage] = [:]
 
-    private init() {
+    private convenience init() {
+        let root: URL
         if let override = ProcessInfo.processInfo.environment["SNAPOK_HISTORY_DIR"]
             ?? ProcessInfo.processInfo.environment["SNAPANY_HISTORY_DIR"] {
             // Tests point the store at a scratch folder so they never touch the real library.
             root = URL(fileURLWithPath: override, isDirectory: true)
         } else {
             // Development and release builds keep separate libraries.
-            root = AppChannel.supportDirectory.appendingPathComponent("History", isDirectory: true)
-            LegacyMigration.run(historyRoot: root)
+            if let path = UserDefaults.standard.string(forKey: Self.locationKey), !path.isEmpty {
+                root = URL(fileURLWithPath: path, isDirectory: true)
+            } else {
+                root = Self.defaultRoot
+                LegacyMigration.run(historyRoot: root)
+            }
         }
+        self.init(root: root)
+    }
+
+    init(root: URL, defaults: UserDefaults = .standard) {
+        self.root = root
+        self.defaults = defaults
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         load()
         purgeExpired()
+    }
+
+    /// Switch the active library; optionally copy existing captures before committing the location.
+    func changeLocation(to destination: URL, copyExisting: Bool = false) throws {
+        let fm = FileManager.default
+        let source = root.resolvingSymlinksInPath().standardizedFileURL
+        let target = destination.resolvingSymlinksInPath().standardizedFileURL
+        guard target != source else { return }
+        let entries = copyExisting
+            ? try fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil).filter { UUID(uuidString: $0.lastPathComponent) != nil }
+            : []
+        if target.path.hasPrefix(source.path + "/") {
+            let relative = String(target.path.dropFirst(source.path.count + 1))
+            if let first = relative.split(separator: "/").first, UUID(uuidString: String(first)) != nil {
+                throw LibraryLocationError.nestedFolder
+            }
+        }
+        for entry in entries {
+            let capture = entry.resolvingSymlinksInPath().standardizedFileURL
+            if target == capture || target.path.hasPrefix(capture.path + "/") {
+                throw LibraryLocationError.nestedFolder
+            }
+        }
+        try fm.createDirectory(at: target, withIntermediateDirectories: true)
+        let staging = target.appendingPathComponent(".snapok-migration-" + UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: staging) }
+        var pending: [String] = []
+        for entry in entries {
+            let existing = target.appendingPathComponent(entry.lastPathComponent)
+            if fm.fileExists(atPath: existing.path) {
+                guard fm.contentsEqual(atPath: entry.path, andPath: existing.path) else {
+                    throw LibraryLocationError.conflictingScreenshot
+                }
+            } else {
+                try fm.copyItem(at: entry, to: staging.appendingPathComponent(entry.lastPathComponent))
+                pending.append(entry.lastPathComponent)
+            }
+        }
+        var installed: [URL] = []
+        do {
+            for name in pending {
+                let url = target.appendingPathComponent(name)
+                try fm.moveItem(at: staging.appendingPathComponent(name), to: url)
+                installed.append(url)
+            }
+        } catch {
+            installed.forEach { try? fm.removeItem(at: $0) }
+            throw error
+        }
+        root = target
+        defaults.set(target.path, forKey: Self.locationKey)
+        thumbnails.removeAll()
+        load()
+        notify()
+    }
+
+    func restoreDefaultLocation() throws {
+        try changeLocation(to: Self.defaultRoot)
+        defaults.removeObject(forKey: Self.locationKey)
     }
 
     private func folder(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString, isDirectory: true) }
@@ -303,6 +379,17 @@ final class HistoryStore {
         let expired = items.filter { $0.createdAt < cutoff }.map(\.id)
         if !expired.isEmpty {
             delete(expired)
+        }
+    }
+}
+
+enum LibraryLocationError: LocalizedError {
+    case nestedFolder, conflictingScreenshot
+
+    var errorDescription: String? {
+        switch self {
+        case .nestedFolder: return L("Choose a library folder rather than a folder inside an individual screenshot's data.", "请选择普通文件夹作为截图库，不能存放到某张截图的数据文件夹里。")
+        case .conflictingScreenshot: return L("The destination contains a different version of an existing screenshot. Choose an empty folder to keep both libraries intact.", "目标文件夹包含同一截图的不同版本，请选择空文件夹，避免覆盖现有数据。")
         }
     }
 }

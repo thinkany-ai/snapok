@@ -36,9 +36,11 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     var onPin: ((NSImage) -> Void)?
     /// The library entry this editor writes its annotations back to on close.
     var historyID: UUID?
-    var annotations: [Annotation] { preview.annotations }
+    var annotations: [Annotation] { preview.commitTextEditing(restoreFocus: false); return preview.annotations }
     private var toolButtons: [NSButton] = []
     private let strokePicker = NSPopUpButton()
+    private let textControls = AnnotationTextControls()
+    private let strokeControls = NSStackView()
     private let annotationColor = NSColorWell()
     private let quickActions: [ToolbarAction] = ToolKind.allCases.map { .tool($0) } + [.undo, .pin, .save, .cancel, .done]
     private let preview: BackgroundPreview
@@ -48,6 +50,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     private var preferences = BackgroundPreferences.load()
     private let dimensions = NSTextField(labelWithString: "")
     private let feedback = NSTextField(wrappingLabelWithString: "")
+    private let operationFeedback = WindowFeedback()
     private let zoomLabel = NSTextField(labelWithString: "")
     private var sliders: [NSSlider] = []
     private var values: [NSTextField] = []
@@ -68,6 +71,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         window.minSize = CGSize(width: 880, height: 640)
         window.isReleasedWhenClosed = false
         super.init(window: window)
+        [annotationColor, colorWell, borderColorWell].forEach { $0.colorWellStyle = .minimal }
         window.delegate = self
         buildInterface()
         restorePreferences()
@@ -248,7 +252,16 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         annotationColor.widthAnchor.constraint(equalToConstant: 42).isActive = true
         annotationColor.heightAnchor.constraint(equalToConstant: 24).isActive = true
         annotationColor.setAccessibilityLabel(L("Annotation color", "标注颜色"))
-        let options = NSStackView(views: [label(L("Size", "大小"), size: 11), strokePicker, label(L("Color", "颜色"), size: 11), annotationColor])
+        strokeControls.addArrangedSubview(label(L("Size", "大小"), size: 11))
+        strokeControls.addArrangedSubview(strokePicker)
+        strokeControls.spacing = 10
+        textControls.onChange = { [weak self] style in
+            guard let self else { return }
+            self.preview.textStyle = style
+            self.preview.applyStyle()
+        }
+        textControls.widthAnchor.constraint(equalToConstant: 288).isActive = true
+        let options = NSStackView(views: [strokeControls, textControls, label(L("Color", "颜色"), size: 11), annotationColor])
         options.spacing = 10
         for (index, color) in Style.colors.enumerated() {
             let image = NSImage(size: CGSize(width: 22, height: 22), flipped: false) { rect in
@@ -319,6 +332,9 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         changeAnnotationStyle()
     }
     private func syncTools() {
+        textControls.isHidden = !preview.usesTextStyle
+        strokeControls.isHidden = preview.usesTextStyle
+        textControls.update(preview.textStyle, pixelScale: preview.pixelScale)
         for (index, button) in toolButtons.enumerated() {
             if case .tool(let tool) = quickActions[index] {
                 button.contentTintColor = preview.selectedTool == tool ? Brand.accent : .labelColor
@@ -390,7 +406,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         case 1:
             guard let wallpaper else {
                 backgroundPicker.selectItem(at: selectedBackground)
-                feedback.stringValue = L("Unable to read the desktop wallpaper. Choose a local background image.", "无法读取当前壁纸，请选择本地背景图片。")
+                operationFeedback.showError(L("Unable to read the desktop wallpaper. Choose a local background image.", "无法读取当前壁纸，请选择本地背景图片。"), in: window)
                 return
             }
             preview.background = .image(wallpaper)
@@ -425,7 +441,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
             guard let image = NSImage(contentsOf: url), image.isValid,
                   image.size.width > 0, image.size.height > 0 else {
                 self.backgroundPicker.selectItem(at: self.selectedBackground)
-                self.feedback.stringValue = L("Unable to read this image. Choose a PNG, JPEG, or HEIC file.", "无法读取这张图片，请选择 PNG、JPEG 或 HEIC。")
+                self.operationFeedback.showError(L("Unable to read this image. Choose a PNG, JPEG, or HEIC file.", "无法读取这张图片，请选择 PNG、JPEG 或 HEIC。"), in: window)
                 return
             }
             self.customImage = image
@@ -502,30 +518,31 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     }
 
     private func output() -> NSImage? {
+        preview.commitTextEditing(restoreFocus: false)
         window?.makeFirstResponder(nil)
         let image = BackgroundRenderer.render(source: preview.source, background: preview.background, layout: preview.composition) { context in
             self.preview.drawAnnotations(in: context)
         }
-        if image == nil { feedback.stringValue = L("Image too large or insufficient memory. Reduce padding and try again.", "图片尺寸过大或内存不足，请减小留白后重试。") }
+        if image == nil { operationFeedback.showError(L("Image too large or insufficient memory. Reduce padding and try again.", "图片尺寸过大或内存不足，请减小留白后重试。"), in: window) }
         return image
     }
 
     @objc private func copyOutput() {
         guard let image = output() else { return }
         ImageExport.copy(image)
-        feedback.stringValue = L("Copied to clipboard.", "已复制到剪贴板。")
+        operationFeedback.show(L("Copied to clipboard.", "已复制到剪贴板。"), in: window)
     }
 
     @objc private func saveOutput() {
         guard let image = output() else { return }
         switch ImageExport.save(image) {
-        case .saved: feedback.stringValue = L("Image saved.", "图片已保存。")
+        case .saved: operationFeedback.show(L("Image saved.", "图片已保存。"), in: window)
         case .cancelled: break
-        case .failed: feedback.stringValue = L("Could not save. Choose another location and try again.", "保存失败，请选择其他位置后重试。")
+        case .failed: operationFeedback.showError(L("Could not save. Choose another location and try again.", "保存失败，请选择其他位置后重试。"), in: window)
         }
     }
 
-    func windowWillClose(_ notification: Notification) { onClose?() }
+    func windowWillClose(_ notification: Notification) { preview.commitTextEditing(restoreFocus: false); operationFeedback.dismiss(); onClose?() }
 
     // MARK: AI tools
 
@@ -552,7 +569,8 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
 
     /// What AI features see: the screenshot with the current annotations, so anything already masked stays masked.
     private var annotatedSource: CGImage? {
-        HistoryRenderer.render(original: preview.sourceImage, annotations: preview.annotations)?
+        preview.commitTextEditing(restoreFocus: false)
+        return HistoryRenderer.render(original: preview.sourceImage, annotations: preview.annotations)?
             .cgImage(forProposedRect: nil, context: nil, hints: nil)
     }
 
@@ -567,7 +585,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
 
     @objc private func redactSensitive() {
         Telemetry.capture("ai_used", ["feature": "redact"])
-        feedback.stringValue = L("Finding sensitive information…", "正在查找敏感信息…")
+        operationFeedback.show(L("Finding sensitive information…", "正在查找敏感信息…"), in: window, success: false)
         let source = preview.source
         let size = preview.sourceImage.size
         Task { @MainActor in
@@ -579,9 +597,10 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
                 ))
             }
             preview.append(masks)
-            feedback.stringValue = masks.isEmpty
+            let message = masks.isEmpty
                 ? L("No sensitive phone numbers, emails, ID numbers, or keys found.", "没有发现手机号、邮箱、证件号或密钥等敏感信息。")
                 : L("Redacted \(masks.count) sensitive regions. Use Undo to restore them.", "已给 \(masks.count) 处敏感信息打码，可用撤销恢复。")
+            operationFeedback.show(message, in: window)
         }
     }
 

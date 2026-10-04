@@ -10,6 +10,7 @@ final class ImageTranslationWindowController: NSWindowController, NSWindowDelega
     private var task: Task<Void, Never>?
     private var initial: [ImageTranslationBlock] = []
     private let status = NSTextField(wrappingLabelWithString: "")
+    private let operationFeedback = WindowFeedback()
     private let originalText = NSTextField(wrappingLabelWithString: "")
     private let input = NSTextView(usingTextLayoutManager: false)
     private let fontSize = NSSlider(value: 16, minValue: 6, maxValue: 100, target: nil, action: nil)
@@ -69,7 +70,7 @@ final class ImageTranslationWindowController: NSWindowController, NSWindowDelega
         copyButton = button(L("Copy Image", "复制图片"), #selector(copyImage))
         saveButton = button(L("Save PNG…", "保存 PNG…"), #selector(saveImage))
         copyButton.isEnabled = false; saveButton.isEnabled = false
-        libraryButton = button(L("Save to Library", "保存到图库"), #selector(saveToLibrary))
+        libraryButton = button(L("Save to Library", "保存到图库"), #selector(saveLibraryWithFeedback))
         libraryButton.isEnabled = false
         let undo = button(L("Undo", "撤销"), #selector(undoEdit))
         let reset = button(L("Reset Edits", "重置修改"), #selector(resetEdits))
@@ -96,6 +97,7 @@ final class ImageTranslationWindowController: NSWindowController, NSWindowDelega
         scroll.hasVerticalScroller = true
         scroll.documentView = input
         fontSize.target = self; fontSize.action = #selector(changeStyle)
+        [foreground, background].forEach { $0.colorWellStyle = .minimal }
         foreground.target = self; foreground.action = #selector(changeStyle)
         background.target = self; background.action = #selector(changeStyle)
         enabled.target = self; enabled.action = #selector(changeEnabled)
@@ -243,7 +245,9 @@ final class ImageTranslationWindowController: NSWindowController, NSWindowDelega
         }
     }
 
-    @objc private func saveToLibrary() {
+    @objc private func saveLibraryWithFeedback() { saveToLibrary(showFeedback: true) }
+
+    private func saveToLibrary(showFeedback: Bool = false) {
         guard !canvas.blocks.isEmpty else { return }
         libraryTask?.cancel(); libraryTask = nil
         do {
@@ -255,18 +259,23 @@ final class ImageTranslationWindowController: NSWindowController, NSWindowDelega
             libraryDirty = false
             libraryStatus.textColor = .secondaryLabelColor
             libraryStatus.stringValue = L("Saved to Library", "已保存到图库")
+            if showFeedback { operationFeedback.show(L("Saved to Library", "已保存到图库"), in: window) }
         } catch {
             log("translated image library save failed", error: error)
             libraryStatus.textColor = .systemRed
             libraryStatus.stringValue = L("Library save failed. Try Save to Library again.", "图库保存失败，请再次点击保存到图库。")
+            if showFeedback { operationFeedback.showError(libraryStatus.stringValue, in: window) }
         }
     }
 
     @objc private func copyImage() {
-        guard let data = ImageTranslationRenderer.png(source: canvas.source, blocks: canvas.blocks) else { return }
+        guard let data = ImageTranslationRenderer.png(source: canvas.source, blocks: canvas.blocks) else {
+            operationFeedback.showError(L("Could not render the image. Try again.", "无法生成图片，请重试。"), in: window)
+            return
+        }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setData(data, forType: .png)
-        status.stringValue = L("Image copied.", "图片已复制。")
+        operationFeedback.show(L("Image copied.", "图片已复制。"), in: window)
     }
     @objc private func saveImage() {
         guard let window else { return }
@@ -278,11 +287,12 @@ final class ImageTranslationWindowController: NSWindowController, NSWindowDelega
             do {
                 guard let data = ImageTranslationRenderer.png(source: canvas.source, blocks: canvas.blocks) else { throw AIError.emptyResponse }
                 try data.write(to: url, options: .atomic)
-                status.stringValue = L("Image saved.", "图片已保存。")
-            } catch { status.textColor = .systemRed; status.stringValue = error.localizedDescription }
+                operationFeedback.show(L("Image saved.", "图片已保存。"), in: window)
+            } catch { operationFeedback.showError(error.localizedDescription, in: window) }
         }
     }
     func windowWillClose(_ notification: Notification) {
+        operationFeedback.dismiss()
         task?.cancel(); task = nil
         libraryTask?.cancel(); libraryTask = nil
         if libraryDirty, let id = libraryID, HistoryStore.shared.item(id) != nil { saveToLibrary() }

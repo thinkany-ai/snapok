@@ -45,6 +45,71 @@ struct HistoryTests {
         let rendered = store.rendered(for: store.item(item.id)!)
         precondition(rendered?.size == image.size, "rendered copy keeps point size")
 
+        // Changing folders preserves editable captures and only commits the preference on success.
+        let migrationRoot = store.root.deletingLastPathComponent().appendingPathComponent("migration-" + UUID().uuidString)
+        let locationSuite = "SnapokLibraryLocation-" + UUID().uuidString
+        let locationDefaults = UserDefaults(suiteName: locationSuite)!
+        defer {
+            try? FileManager.default.removeItem(at: migrationRoot)
+            locationDefaults.removePersistentDomain(forName: locationSuite)
+        }
+        let oldRoot = migrationRoot.appendingPathComponent("old")
+        let newRoot = migrationRoot.appendingPathComponent("new")
+        let moving = HistoryStore(root: oldRoot, defaults: locationDefaults)
+        let movingItem = moving.add(original: image, annotations: annotations)!
+        let originalBytes = try Data(contentsOf: moving.fileURL(for: movingItem))
+        try moving.changeLocation(to: newRoot, copyExisting: true)
+        precondition(moving.root == newRoot.resolvingSymlinksInPath().standardizedFileURL)
+        precondition(locationDefaults.string(forKey: HistoryStore.locationKey) == moving.root.path)
+        let copiedBytes = try Data(contentsOf: moving.fileURL(for: movingItem))
+        precondition(copiedBytes == originalBytes)
+        precondition(FileManager.default.fileExists(atPath: oldRoot.appendingPathComponent(movingItem.id.uuidString).appendingPathComponent("original.png").path), "Keep the source library as a backup")
+        let reopened = HistoryStore(root: moving.root, defaults: locationDefaults)
+        precondition(reopened.item(movingItem.id)?.annotations.count == annotations.count)
+        precondition(reopened.original(for: movingItem)?.size == image.size && reopened.thumbnail(for: movingItem) != nil)
+        let later = moving.add(original: image, annotations: [])!
+        precondition(moving.fileURL(for: later).path.hasPrefix(moving.root.path + "/"))
+        precondition(!FileManager.default.fileExists(atPath: oldRoot.appendingPathComponent(later.id.uuidString).path))
+        do {
+            try moving.changeLocation(to: moving.root.appendingPathComponent(movingItem.id.uuidString).appendingPathComponent("nested"))
+            preconditionFailure("A destination inside screenshot data must be rejected")
+        } catch LibraryLocationError.nestedFolder {}
+        let ordinaryChild = moving.root.appendingPathComponent("Screenshots")
+        try moving.changeLocation(to: ordinaryChild, copyExisting: true)
+        precondition(moving.root == ordinaryChild.resolvingSymlinksInPath().standardizedFileURL && moving.item(later.id) != nil,
+                     "An ordinary child folder is a valid library location")
+        try moving.changeLocation(to: migrationRoot, copyExisting: true)
+        precondition(moving.root == migrationRoot.resolvingSymlinksInPath().standardizedFileURL && moving.item(later.id) != nil,
+                     "A parent folder such as the user's home must be a valid library location")
+        let beforeFailure = moving.root
+        let conflictRoot = migrationRoot.appendingPathComponent("conflict")
+        let conflictingFolder = conflictRoot.appendingPathComponent(movingItem.id.uuidString)
+        try FileManager.default.createDirectory(at: conflictingFolder, withIntermediateDirectories: true)
+        try Data("existing data".utf8).write(to: conflictingFolder.appendingPathComponent("original.png"))
+        do {
+            try moving.changeLocation(to: conflictRoot, copyExisting: true)
+            preconditionFailure("Different existing captures must never be overwritten")
+        } catch LibraryLocationError.conflictingScreenshot {}
+        precondition(moving.root == beforeFailure && locationDefaults.string(forKey: HistoryStore.locationKey) == beforeFailure.path)
+        let preservedConflict = try Data(contentsOf: conflictingFolder.appendingPathComponent("original.png"))
+        precondition(preservedConflict == Data("existing data".utf8))
+        let remainingFiles = try FileManager.default.contentsOfDirectory(atPath: conflictRoot.path)
+        precondition(remainingFiles == [movingItem.id.uuidString], "Failed copies must remove migration staging files")
+        let freshRoot = migrationRoot.appendingPathComponent("fresh")
+        let previousRoot = moving.root
+        try moving.changeLocation(to: freshRoot)
+        precondition(moving.items.isEmpty, "By default changing folders must not copy previous screenshots")
+        precondition(!FileManager.default.fileExists(atPath: freshRoot.appendingPathComponent(movingItem.id.uuidString).path))
+        precondition(FileManager.default.fileExists(atPath: previousRoot.appendingPathComponent(movingItem.id.uuidString).path))
+        let freshItem = moving.add(original: image, annotations: [])!
+        precondition(moving.fileURL(for: freshItem).path.hasPrefix(moving.root.path + "/"))
+        precondition(!FileManager.default.fileExists(atPath: previousRoot.appendingPathComponent(freshItem.id.uuidString).path))
+        try moving.changeLocation(to: previousRoot)
+        precondition(moving.item(movingItem.id) != nil && moving.item(freshItem.id) == nil,
+                     "Switching back without copying must reopen the old library without merging captures")
+        moving.delete([movingItem.id, later.id])
+        precondition(FileManager.default.fileExists(atPath: oldRoot.appendingPathComponent(movingItem.id.uuidString).path), "Deleting from the active library must leave its backup intact")
+
 
         // On-device text recognition reads the text and boxes the sensitive values.
         let scan = await TextScanner.scan(image.cgImage(forProposedRect: nil, context: nil, hints: nil)!)
