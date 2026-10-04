@@ -20,6 +20,9 @@ struct CaptureStyle {
             if let path = preferences.customImagePath, let image = NSImage(contentsOfFile: path) {
                 background = .image(image)
             } else { background = .gradient(preferences.gradient) }
+        case 4:
+            let gradient = preferences.customGradient ?? .init()
+            background = .customGradient(start: Self.color(gradient.start), end: Self.color(gradient.end), angle: CGFloat(gradient.angle))
         default: background = .gradient(preferences.gradient)
         }
     }
@@ -55,6 +58,9 @@ struct CaptureStyle {
             saved.backgroundType = 3
             saved.customImagePath = "background.png"
         case .gradient(let index): saved.backgroundType = 0; saved.gradient = index
+        case .customGradient(let start, let end, let angle):
+            saved.backgroundType = 4
+            saved.customGradient = .init(start: Self.components(start), end: Self.components(end), angle: Double(angle))
         case .color: saved.backgroundType = 2
         }
         return saved
@@ -62,5 +68,9 @@ struct CaptureStyle {
 
     private static func color(_ values: [Double]) -> NSColor {
         NSColor(srgbRed: values[0], green: values[1], blue: values[2], alpha: values[3])
+    }
+    private static func components(_ color: NSColor) -> [Double] {
+        let color = color.usingColorSpace(.sRGB) ?? .white
+        return [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent]
     }
 }

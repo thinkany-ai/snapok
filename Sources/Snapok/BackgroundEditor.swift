@@ -51,6 +51,12 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     private let backgroundPicker = NSPopUpButton()
     private let colorWell = NSColorWell()
     private let borderColorWell = NSColorWell()
+    private let gradientStart = NSColorWell()
+    private let gradientEnd = NSColorWell()
+    private let gradientAngle = NSSlider(value: 35, minValue: 0, maxValue: 360, target: nil, action: nil)
+    private let gradientAngleLabel = NSTextField(labelWithString: "35°")
+    private let customGradientControls = NSStackView()
+    private var gradientButtons: [NSButton] = []
     private var preferences = BackgroundPreferences.load()
     private let dimensions = NSTextField(labelWithString: "")
     private let feedback = NSTextField(wrappingLabelWithString: "")
@@ -62,6 +68,7 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     private var wallpaper: NSImage?
     private var customImage: NSImage?
     private var selectedBackground = 0
+    private var usesCustomGradient = false
     private var selectedGradient = 0
 
     init(image: NSImage, screen: NSScreen?, annotations: [Annotation] = [], style: BackgroundPreferences? = nil) {
@@ -76,13 +83,14 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         window.minSize = CGSize(width: 880, height: 640)
         window.isReleasedWhenClosed = false
         super.init(window: window)
-        [annotationColor, colorWell, borderColorWell].forEach { $0.colorWellStyle = .minimal }
+        [annotationColor, colorWell, borderColorWell, gradientStart, gradientEnd].forEach { $0.useCompactSwatch() }
         window.delegate = self
         buildInterface()
         restorePreferences()
         preview.onChange = { [weak self] in self?.syncTools() }
         preview.onCommand = { [weak self] action in self?.performQuickAction(action) }
         preview.onViewportChange = { [weak self] in self?.updateZoomLabel() }
+        syncTools()
         updateZoomLabel()
         window.makeFirstResponder(preview)
         window.center()
@@ -172,29 +180,62 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         backgroundPicker.action = #selector(changeBackground)
         add(backgroundPicker)
         let swatches = NSStackView()
+        swatches.orientation = .vertical
         swatches.spacing = 8
-        swatches.distribution = .fillEqually
-        let presetNames = [L("Berry Pink", "莓粉渐变"), L("Coastal Blue", "海岸蓝"), L("Twilight Purple", "暮光紫")]
-        for index in 0..<3 {
-            let swatch = NSButton(image: NSImage(size: CGSize(width: 72, height: 42), flipped: false) { rect in
-                EditorBackground.gradient(index).draw(in: rect)
-                return true
-            }, target: self, action: #selector(selectPreset(_:)))
-            swatch.tag = index
-            swatch.isBordered = false
-            swatch.imageScaling = .scaleAxesIndependently
-            swatch.toolTip = presetNames[index]
-            swatch.setAccessibilityLabel(presetNames[index])
-            swatch.heightAnchor.constraint(equalToConstant: 42).isActive = true
-            swatches.addArrangedSubview(swatch)
+        let presetNames = [L("Berry Pink", "莓粉"), L("Coastal Blue", "海岸蓝"), L("Twilight Purple", "暮光紫"), L("Sunrise", "日出"), L("Mint", "薄荷"), L("Peach", "蜜桃")]
+        for rowIndex in 0..<2 {
+            let row = NSStackView()
+            row.spacing = 8
+            row.distribution = .fillEqually
+            for index in (rowIndex * 3)..<(rowIndex * 3 + 3) {
+                let swatch = NSButton(image: NSImage(size: CGSize(width: 72, height: 36), flipped: false) { rect in
+                    EditorBackground.gradient(index).draw(in: rect)
+                    return true
+                }, target: self, action: #selector(selectPreset(_:)))
+                swatch.tag = index
+                swatch.isBordered = false
+                swatch.imageScaling = .scaleAxesIndependently
+                swatch.toolTip = presetNames[index]
+                swatch.setAccessibilityLabel(presetNames[index])
+                swatch.heightAnchor.constraint(equalToConstant: 36).isActive = true
+                swatch.wantsLayer = true
+                swatch.layer?.cornerRadius = 6
+                swatch.layer?.masksToBounds = true
+                gradientButtons.append(swatch)
+                row.addArrangedSubview(swatch)
+            }
+            swatches.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: swatches.widthAnchor).isActive = true
         }
         add(swatches)
+        customGradientControls.orientation = .vertical
+        customGradientControls.alignment = .leading
+        customGradientControls.spacing = 10
+        [gradientStart, gradientEnd].forEach {
+            $0.target = self
+            $0.action = #selector(changeCustomGradient)
+        }
+        gradientStart.setAccessibilityLabel(L("Gradient start color", "渐变起始颜色"))
+        gradientEnd.setAccessibilityLabel(L("Gradient end color", "渐变结束颜色"))
+        let gradientColors = NSStackView(views: [label(L("Start", "起始"), size: 12), gradientStart, label(L("End", "结束"), size: 12), gradientEnd])
+        gradientColors.spacing = 10
+        customGradientControls.addArrangedSubview(gradientColors)
+        gradientAngle.target = self
+        gradientAngle.action = #selector(changeCustomGradient)
+        gradientAngle.isContinuous = true
+        gradientAngle.setAccessibilityLabel(L("Gradient angle", "渐变角度"))
+        gradientAngleLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        gradientAngleLabel.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        let gradientDirection = NSStackView(views: [label(L("Angle", "方向"), size: 12), gradientAngle, gradientAngleLabel])
+        gradientDirection.spacing = 8
+        customGradientControls.addArrangedSubview(gradientDirection)
+        gradientDirection.widthAnchor.constraint(equalTo: customGradientControls.widthAnchor).isActive = true
+        add(customGradientControls)
         let importButton = button(L("Choose Background Image…", "选择背景图片…"), action: #selector(importBackground))
         add(importButton)
         colorWell.color = NSColor(srgbRed: 0.96, green: 0.90, blue: 0.94, alpha: 1)
         colorWell.target = self
         colorWell.action = #selector(changeColor)
-        colorWell.heightAnchor.constraint(equalToConstant: 28).isActive = true
         colorWell.setAccessibilityLabel(L("Custom background color", "自定义背景颜色"))
         let colorRow = NSStackView(views: [label(L("Custom color", "自选颜色"), size: 12), colorWell])
         colorRow.spacing = 12
@@ -207,7 +248,6 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         borderColorWell.color = .white
         borderColorWell.target = self
         borderColorWell.action = #selector(updateComposition)
-        borderColorWell.heightAnchor.constraint(equalToConstant: 28).isActive = true
         borderColorWell.setAccessibilityLabel(L("Border color", "描边颜色"))
         let borderColorRow = NSStackView(views: [label(L("Border color", "描边颜色"), size: 12), borderColorWell])
         borderColorRow.spacing = 12
@@ -255,8 +295,6 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         annotationColor.color = preview.selectedColor
         annotationColor.target = self
         annotationColor.action = #selector(changeAnnotationStyle)
-        annotationColor.widthAnchor.constraint(equalToConstant: 42).isActive = true
-        annotationColor.heightAnchor.constraint(equalToConstant: 24).isActive = true
         annotationColor.setAccessibilityLabel(L("Annotation color", "标注颜色"))
         strokeControls.addArrangedSubview(label(L("Size", "大小"), size: 11))
         strokeControls.addArrangedSubview(strokePicker)
@@ -422,6 +460,8 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
 
     @objc private func selectPreset(_ sender: NSButton) {
         selectedGradient = sender.tag
+        usesCustomGradient = false
+        restorePresetControls()
         backgroundPicker.selectItem(at: 0)
         changeBackground()
     }
@@ -429,22 +469,51 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     @objc private func changeBackground() {
         let index = backgroundPicker.indexOfSelectedItem
         switch index {
-        case 0: preview.background = .gradient(selectedGradient)
+        case 0: preview.background = usesCustomGradient ? customGradientBackground() : .gradient(selectedGradient)
         case 1:
             guard let wallpaper else {
-                backgroundPicker.selectItem(at: selectedBackground)
+                backgroundPicker.selectItem(at: selectedBackground == 4 ? 0 : selectedBackground)
                 operationFeedback.showError(L("Unable to read the desktop wallpaper. Choose a local background image.", "无法读取当前壁纸，请选择本地背景图片。"), in: window)
                 return
             }
             preview.background = .image(wallpaper)
         case 2: preview.background = .color(colorWell.color)
-        default:
+        case 3:
             guard let customImage else { importBackground(); return }
             preview.background = .image(customImage)
+        default: preview.background = customGradientBackground()
         }
-        selectedBackground = index
+        selectedBackground = index == 0 && usesCustomGradient ? 4 : index
+        syncGradientControls()
         savePreferences()
         refresh()
+    }
+
+    private func customGradientBackground() -> EditorBackground {
+        .customGradient(start: gradientStart.color, end: gradientEnd.color, angle: CGFloat(gradientAngle.doubleValue))
+    }
+
+    @objc private func changeCustomGradient() {
+        gradientAngle.integerValue = Int(gradientAngle.doubleValue.rounded())
+        usesCustomGradient = true
+        backgroundPicker.selectItem(at: 0)
+        changeBackground()
+    }
+
+    private func restorePresetControls() {
+        let palette = EditorBackground.palettes[selectedGradient]
+        gradientStart.color = palette.first!
+        gradientEnd.color = palette.last!
+        gradientAngle.doubleValue = 35
+    }
+
+    private func syncGradientControls() {
+        customGradientControls.isHidden = selectedBackground != 0 && selectedBackground != 4
+        gradientAngleLabel.stringValue = "\(gradientAngle.integerValue)°"
+        for button in gradientButtons {
+            button.layer?.borderWidth = selectedBackground == 0 && button.tag == selectedGradient ? 2 : 0
+            button.layer?.borderColor = Brand.accent.cgColor
+        }
     }
 
     @objc private func changeColor() {
@@ -462,12 +531,12 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
             guard response == .OK, let url = panel.url else {
-                self.backgroundPicker.selectItem(at: self.selectedBackground)
+                self.backgroundPicker.selectItem(at: self.selectedBackground == 4 ? 0 : self.selectedBackground)
                 return
             }
             guard let image = NSImage(contentsOf: url), image.isValid,
                   image.size.width > 0, image.size.height > 0 else {
-                self.backgroundPicker.selectItem(at: self.selectedBackground)
+                self.backgroundPicker.selectItem(at: self.selectedBackground == 4 ? 0 : self.selectedBackground)
                 self.operationFeedback.showError(L("Unable to read this image. Choose a PNG, JPEG, or HEIC file.", "无法读取这张图片，请选择 PNG、JPEG 或 HEIC。"), in: window)
                 return
             }
@@ -491,8 +560,9 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
     }
 
     private func restorePreferences() {
-        selectedGradient = preferences.gradient
+        selectedGradient = min(max(preferences.gradient, 0), EditorBackground.palettes.count - 1)
         selectedBackground = preferences.backgroundType
+        usesCustomGradient = preferences.backgroundType == 4 || preferences.usesCustomGradient == true
         if let path = preferences.customImagePath { customImage = NSImage(contentsOfFile: path) }
         // Keep last-used image defaults independent of the lifetime of a library item.
         if let customImage, let data = customImage.tiffRepresentation {
@@ -510,25 +580,34 @@ final class BackgroundEditorController: NSWindowController, NSWindowDelegate, NS
         }
         colorWell.color = Self.color(preferences.backgroundColor)
         borderColorWell.color = Self.color(preferences.borderColor)
+        let gradient = preferences.customGradient ?? .init()
+        gradientStart.color = Self.color(gradient.start)
+        gradientEnd.color = Self.color(gradient.end)
+        gradientAngle.doubleValue = gradient.angle
+        if !usesCustomGradient { restorePresetControls() }
         let restored = [preferences.horizontalPadding, preferences.verticalPadding, preferences.borderWidth, preferences.cornerRadius]
         for (index, value) in restored.enumerated() {
             sliders[index].integerValue = value
             values[index].integerValue = value
         }
         shadowButton.state = preferences.shadow ? .on : .off
-        backgroundPicker.selectItem(at: selectedBackground)
+        backgroundPicker.selectItem(at: selectedBackground == 4 ? 0 : selectedBackground)
         switch selectedBackground {
         case 1: preview.background = .image(wallpaper!)
         case 2: preview.background = .color(colorWell.color)
         case 3: preview.background = .image(customImage!)
+        case 4: preview.background = customGradientBackground()
         default: preview.background = .gradient(selectedGradient)
         }
+        syncGradientControls()
         updateComposition()
     }
 
     private func savePreferences() {
         preferences.backgroundType = selectedBackground
         preferences.gradient = selectedGradient
+        preferences.usesCustomGradient = usesCustomGradient
+        preferences.customGradient = .init(start: Self.components(gradientStart.color), end: Self.components(gradientEnd.color), angle: gradientAngle.doubleValue)
         preferences.horizontalPadding = sliders[0].integerValue
         preferences.verticalPadding = sliders[1].integerValue
         preferences.borderWidth = sliders[2].integerValue

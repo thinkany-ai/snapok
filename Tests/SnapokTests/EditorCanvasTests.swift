@@ -82,6 +82,47 @@ struct EditorCanvasTests {
         context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
         context.fill(CGRect(x: 0, y: 0, width: 600, height: 400))
         let image = NSImage(cgImage: context.makeImage()!, size: CGSize(width: 300, height: 200))
+        // Desktop capture flips AppKit coordinates around the main display, not around the union's bottom.
+        let primary = CGRect(x: 0, y: 0, width: 300, height: 200)
+        let secondaryLayouts = [
+            CGRect(x: 0, y: 200, width: 300, height: 200),
+            CGRect(x: 0, y: -200, width: 300, height: 200),
+            CGRect(x: -300, y: 0, width: 300, height: 200),
+            CGRect(x: 300, y: 0, width: 300, height: 300),
+            CGRect(x: 300, y: -80, width: 300, height: 200)
+        ]
+        let expectedCaptureBounds = [
+            CGRect(x: 0, y: -200, width: 300, height: 400),
+            CGRect(x: 0, y: 0, width: 300, height: 400),
+            CGRect(x: -300, y: 0, width: 600, height: 200),
+            CGRect(x: 0, y: -100, width: 600, height: 300),
+            CGRect(x: 0, y: 0, width: 600, height: 280)
+        ]
+        for (secondary, expectedBounds) in zip(secondaryLayouts, expectedCaptureBounds) {
+            let bounds = primary.union(secondary)
+            let captureBounds = DesktopGeometry.captureRect(for: bounds, primaryHeight: primary.height)
+            precondition(captureBounds == expectedBounds, "Capture must include offset displays in Quartz coordinates")
+            for scale: CGFloat in [1, 2] {
+                let cg = CGContext(data: nil, width: Int(bounds.width * scale), height: Int(bounds.height * scale),
+                                   bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                cg.scaleBy(x: scale, y: scale)
+                cg.translateBy(x: -bounds.minX, y: -bounds.minY)
+                cg.setFillColor(red: 1, green: 0, blue: 0, alpha: 1); cg.fill(primary)
+                cg.setFillColor(red: 0, green: 0, blue: 1, alpha: 1); cg.fill(secondary)
+                let desktop = NSImage(cgImage: cg.makeImage()!, size: bounds.size)
+                for (index, frame) in [primary, secondary].enumerated() {
+                    let cropped = ScreenCapture.crop(image: desktop, to: frame, desktopBounds: bounds)!
+                    let bitmap = NSBitmapImageRep(cgImage: cropped.cgImage(forProposedRect: nil, context: nil, hints: nil)!)
+                    precondition(bitmap.pixelsWide == Int(frame.width * scale) && bitmap.pixelsHigh == Int(frame.height * scale))
+                    let color = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2)!
+                    precondition(index == 0 ? color.redComponent > 0.99 : color.blueComponent > 0.99,
+                                 "Both screens must retain their own desktop, including above/below and unequal heights")
+                    let output = ScreenCapture.render(image: desktop, result: CaptureResult(globalRect: frame, annotations: []), desktopBounds: bounds)!
+                    precondition(output.pngData == cropped.pngData, "Preview and export must use the same frozen desktop bounds")
+                }
+            }
+        }
         // Step markers place immediately, remain editable, and resume numbering after undo/reopen.
         let steps = BackgroundPreview(image: image)
         let stepsWindow = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 720, height: 520), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -382,6 +423,68 @@ struct EditorCanvasTests {
         let editor = BackgroundEditorController(image: image, screen: nil, annotations: [original])
         let root = editor.window!.contentView!
         root.layoutSubtreeIfNeeded()
+        func colorWells(in view: NSView) -> [NSColorWell] {
+            (view as? NSColorWell).map { [$0] } ?? view.subviews.flatMap { colorWells(in: $0) }
+        }
+        for well in colorWells(in: root) {
+            precondition(well.frame.width == 34 && well.frame.height == 22, "Color entries must remain compact native swatches")
+        }
+        var gradientPreferences = BackgroundPreferences()
+        gradientPreferences.backgroundType = 4
+        gradientPreferences.customGradient = .init(start: [1, 0, 0, 1], end: [0, 0, 1, 1], angle: 135)
+        let gradientEditor = BackgroundEditorController(image: image, screen: nil, style: gradientPreferences)
+        let gradientRoot = gradientEditor.window!.contentView!
+        gradientRoot.layoutSubtreeIfNeeded()
+        precondition(gradientEditor.captureStyle.preferences.customGradient == gradientPreferences.customGradient)
+        guard case .customGradient(_, _, let restoredAngle) = gradientEditor.captureStyle.background else {
+            preconditionFailure("Custom gradients must restore directly in the editor")
+        }
+        precondition(restoredAngle == 135)
+        if CommandLine.arguments.count > 1 {
+            let rep = gradientRoot.bitmapImageRepForCachingDisplay(in: gradientRoot.bounds)!
+            gradientRoot.cacheDisplay(in: gradientRoot.bounds, to: rep)
+            try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1] + "-custom-gradient.png"))
+        }
+        func descendants(of view: NSView) -> [NSView] {
+            [view] + view.subviews.flatMap { descendants(of: $0) }
+        }
+        let gradientViews = descendants(of: gradientRoot)
+        let backgroundPicker = gradientViews.compactMap { $0 as? NSPopUpButton }.first { $0.itemTitles.first == L("Gradient", "渐变") }!
+        precondition(backgroundPicker.numberOfItems == 4 && backgroundPicker.indexOfSelectedItem == 0,
+                     "Custom gradients must use the single Gradient entry")
+        let presets = gradientViews.compactMap { $0 as? NSButton }.filter { $0.action == NSSelectorFromString("selectPreset:") }
+        precondition(presets.count == 6, "The editor must offer exactly six built-in gradients")
+        let angle = gradientViews.compactMap { $0 as? NSSlider }.first { $0.action == NSSelectorFromString("changeCustomGradient") }!
+        precondition(!angle.isHiddenOrHasHiddenAncestor, "Gradient editing must be visible in the Gradient section")
+        presets.first { $0.tag == 1 }!.performClick(nil)
+        guard case .gradient(let presetIndex) = gradientEditor.captureStyle.background else {
+            preconditionFailure("Selecting a preset must preserve its original color stops")
+        }
+        precondition(presetIndex == 1 && angle.doubleValue == 35)
+        precondition(!angle.isHiddenOrHasHiddenAncestor)
+        angle.doubleValue = 90
+        NSApp.sendAction(angle.action!, to: angle.target, from: angle)
+        precondition(backgroundPicker.indexOfSelectedItem == 0)
+        guard case .customGradient(_, _, let editedAngle) = gradientEditor.captureStyle.background else {
+            preconditionFailure("Editing a preset must create a custom gradient within the same entry")
+        }
+        precondition(editedAngle == 90)
+        backgroundPicker.selectItem(at: 2)
+        NSApp.sendAction(backgroundPicker.action!, to: backgroundPicker.target, from: backgroundPicker)
+        precondition(angle.isHiddenOrHasHiddenAncestor)
+        backgroundPicker.selectItem(at: 0)
+        NSApp.sendAction(backgroundPicker.action!, to: backgroundPicker.target, from: backgroundPicker)
+        guard case .customGradient(_, _, let returnedAngle) = gradientEditor.captureStyle.background else {
+            preconditionFailure("Returning to Gradient must preserve the edited colors and direction")
+        }
+        precondition(returnedAngle == 90 && !angle.isHiddenOrHasHiddenAncestor)
+        var oldGradientPreferences = BackgroundPreferences()
+        oldGradientPreferences.gradient = 8
+        let oldGradientEditor = BackgroundEditorController(image: image, screen: nil, style: oldGradientPreferences)
+        guard case .gradient(let compatiblePreset) = oldGradientEditor.captureStyle.background else {
+            preconditionFailure("Old gradient entries must restore to an available preset")
+        }
+        precondition(compatiblePreset == 5)
         let operationFeedback = WindowFeedback()
         let initialResponder = editor.window!.firstResponder
         operationFeedback.show("Copied to clipboard.", in: editor.window)
@@ -426,6 +529,15 @@ struct EditorCanvasTests {
             let delegate = CaptureEditDelegate()
             captureWindow.captureDelegate = delegate
             let view = captureWindow.contentView as! CaptureView
+            // An untouched display must retain its original desktop brightness during capture.
+            view.mouseExited(with: NSEvent.mouseEvent(with: .mouseMoved, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: captureWindow.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0)!)
+            let untouchedRegion = CGRect(x: 40, y: 40, width: 20, height: 20)
+            let untouchedBitmap = view.bitmapImageRepForCachingDisplay(in: untouchedRegion)!
+            view.cacheDisplay(in: untouchedRegion, to: untouchedBitmap)
+            let untouchedColor = untouchedBitmap.colorAt(x: 5, y: 5)!
+            precondition(untouchedColor.redComponent > 0.99 && untouchedColor.greenComponent > 0.99 && untouchedColor.blueComponent > 0.99,
+                         "Inactive displays must not be dimmed or blacked out")
             func captureEvent(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat, clicks: Int = 1) -> NSEvent {
                 NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: y), modifierFlags: [], timestamp: 0,
                     windowNumber: captureWindow.windowNumber, context: nil, eventNumber: 1, clickCount: clicks, pressure: 1)!

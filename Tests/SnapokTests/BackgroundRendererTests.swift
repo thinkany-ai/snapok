@@ -54,14 +54,29 @@ struct BackgroundRendererTests {
                      layout: BackgroundLayout(horizontalPadding: 20000, verticalPadding: 20000)) == nil)
         let preview = BackgroundRenderer.render(source: source, background: .gradient(0), layout: BackgroundLayout())!
         let previewBitmap = NSBitmapImageRep(cgImage: preview.cgImage(forProposedRect: nil, context: nil, hints: nil)!)
+        precondition(EditorBackground.palettes.count == BackgroundPreferences.gradientPresetCount)
+        var presets: [Data] = []
+        for index in EditorBackground.palettes.indices {
+            let preset = BackgroundRenderer.render(source: source, background: .gradient(index), layout: layout)!
+            presets.append(NSBitmapImageRep(cgImage: preset.cgImage(forProposedRect: nil, context: nil, hints: nil)!).representation(using: .png, properties: [:])!)
+        }
+        precondition(Set(presets).count == 6, "All six presets must have distinct backgrounds")
+        let horizontal = BackgroundRenderer.render(source: source, background: .customGradient(start: .red, end: .blue, angle: 0), layout: layout)!
+        let horizontalBitmap = NSBitmapImageRep(cgImage: horizontal.cgImage(forProposedRect: nil, context: nil, hints: nil)!)
+        expect(horizontalBitmap, 1, 220, .red)
+        expect(horizontalBitmap, 758, 220, .blue)
+        let vertical = BackgroundRenderer.render(source: source, background: .customGradient(start: .red, end: .blue, angle: 90), layout: layout)!
+        let verticalBitmap = NSBitmapImageRep(cgImage: vertical.cgImage(forProposedRect: nil, context: nil, hints: nil)!)
+        expect(verticalBitmap, 400, 1, .blue)
+        expect(verticalBitmap, 400, 438, .red)
         if CommandLine.arguments.count > 1 {
             try previewBitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
         }
-        checkPreferences()
+        try checkPreferences()
         print("Passed background checks: dimensions/orientation, zero padding, rounded corners, border pixels, custom image fill, export limits, preference restoration")
     }
 
-    static func checkPreferences() {
+    static func checkPreferences() throws {
         let suite = "Snapok.BackgroundPreferencesTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -77,6 +92,7 @@ struct BackgroundRendererTests {
         saved.borderColor = [0.2, 0.3, 0.4, 0.8]
         saved.backgroundColor = [0.1, 0.4, 0.5, 1]
         saved.customImagePath = "/tmp/background.tiff"
+        saved.customGradient = .init(start: [0.2, 0.4, 0.6, 1], end: [0.9, 0.8, 0.7, 1], angle: 135)
         saved.save(in: defaults)
         precondition(BackgroundPreferences.load(in: UserDefaults(suiteName: suite)!) == saved)
         saved.horizontalPadding = -10
@@ -85,8 +101,12 @@ struct BackgroundRendererTests {
         saved.borderColor = [1, 2]
         saved.save(in: defaults)
         let clamped = BackgroundPreferences.load(in: defaults)
-        precondition(clamped.horizontalPadding == 0 && clamped.gradient == 2 && clamped.borderWidth == 20)
+        precondition(clamped.horizontalPadding == 0 && clamped.gradient == 5 && clamped.borderWidth == 20)
         precondition(clamped.borderColor == BackgroundPreferences().borderColor)
+        var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved)) as! [String: Any]
+        legacy.removeValue(forKey: "customGradient")
+        defaults.set(try JSONSerialization.data(withJSONObject: legacy), forKey: BackgroundPreferences.key)
+        precondition(BackgroundPreferences.load(in: defaults).customGradient == nil, "Existing settings must decode without a custom gradient")
         defaults.set(Data("invalid".utf8), forKey: BackgroundPreferences.key)
         precondition(BackgroundPreferences.load(in: defaults) == BackgroundPreferences())
     }

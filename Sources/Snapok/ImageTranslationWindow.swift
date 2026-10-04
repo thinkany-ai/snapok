@@ -97,7 +97,7 @@ final class ImageTranslationWindowController: NSWindowController, NSWindowDelega
         scroll.hasVerticalScroller = true
         scroll.documentView = input
         fontSize.target = self; fontSize.action = #selector(changeStyle)
-        [foreground, background].forEach { $0.colorWellStyle = .minimal }
+        [foreground, background].forEach { $0.useCompactSwatch() }
         foreground.target = self; foreground.action = #selector(changeStyle)
         background.target = self; background.action = #selector(changeStyle)
         enabled.target = self; enabled.action = #selector(changeEnabled)
@@ -121,8 +121,6 @@ final class ImageTranslationWindowController: NSWindowController, NSWindowDelega
             view.widthAnchor.constraint(equalTo: inspector.widthAnchor).isActive = true
         }
         scroll.heightAnchor.constraint(equalToConstant: 110).isActive = true
-        foreground.widthAnchor.constraint(equalToConstant: 36).isActive = true
-        background.widthAnchor.constraint(equalToConstant: 36).isActive = true
         width.widthAnchor.constraint(equalToConstant: 55).isActive = true
         height.widthAnchor.constraint(equalToConstant: 55).isActive = true
         spinner.style = .spinning; spinner.controlSize = .small

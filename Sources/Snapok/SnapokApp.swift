@@ -253,7 +253,7 @@ final class ScreenshotController {
     private var pinnedWindows: [PinnedImageWindow] = []
     private var editors: [BackgroundEditorController] = []
     private var scrollSession: ScrollingCaptureSession?
-    private var screenImage: NSImage?
+    private var screenSnapshot: DesktopSnapshot?
     private var preparingCapture = false
 
     func start() {
@@ -290,16 +290,14 @@ final class ScreenshotController {
     }
 
     private func beginCapture(windowFrames: [WindowTarget]) {
-        guard let image = ScreenCapture.captureAllScreens() else {
+        guard let snapshot = ScreenCapture.captureAllScreens() else {
             log("screen capture failed, access=\(CGPreflightScreenCaptureAccess())")
             NSSound.beep()
             return
         }
-        screenImage = image
-
-        NSApp.activate(ignoringOtherApps: true)
+        screenSnapshot = snapshot
         windows = NSScreen.screens.map { screen in
-            let window = CaptureWindow(screen: screen, desktopImage: image, windowFrames: windowFrames)
+            let window = CaptureWindow(screen: screen, desktopImage: snapshot.image, windowFrames: windowFrames, desktopBounds: snapshot.bounds)
             window.captureDelegate = self
             return window
         }
@@ -307,6 +305,7 @@ final class ScreenshotController {
         windows.forEach { $0.orderFrontRegardless() }
         let mouse = NSEvent.mouseLocation
         (windows.first { $0.frame.contains(mouse) } ?? windows.first)?.makeKey()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func finish(_ result: CaptureResult, mode: CaptureFinishMode, from window: CaptureWindow) {
@@ -315,13 +314,13 @@ final class ScreenshotController {
             startScrollingCapture(in: result.globalRect)
             return
         }
-        guard let image = screenImage,
-              let rendered = ScreenCapture.render(image: image, result: result) else {
+        guard let snapshot = screenSnapshot,
+              let rendered = ScreenCapture.render(image: snapshot.image, result: result, desktopBounds: snapshot.bounds) else {
             closeWindows()
             return
         }
 
-        let original = ScreenCapture.crop(image: image, to: result.globalRect)
+        let original = ScreenCapture.crop(image: snapshot.image, to: result.globalRect, desktopBounds: snapshot.bounds)
         let screen = NSScreen.screens.first { $0.frame.intersects(result.globalRect) }
         let style = mode == .editImage ? nil : CaptureStyle.forNewCapture(screen: screen)
         let output: NSImage
@@ -454,7 +453,7 @@ final class ScreenshotController {
     private func closeWindows() {
         windows.forEach { $0.orderOut(nil) }
         windows.removeAll()
-        screenImage = nil
+        screenSnapshot = nil
         MosaicCache.clear()
         NSCursor.arrow.set()
     }
@@ -602,8 +601,8 @@ protocol CaptureWindowDelegate: AnyObject {
 final class CaptureWindow: NSWindow {
     weak var captureDelegate: CaptureWindowDelegate?
 
-    init(screen: NSScreen, desktopImage: NSImage, windowFrames: [WindowTarget]) {
-        let view = CaptureView(screen: screen, desktopImage: desktopImage, windowFrames: windowFrames)
+    init(screen: NSScreen, desktopImage: NSImage, windowFrames: [WindowTarget], desktopBounds: CGRect? = nil) {
+        let view = CaptureView(screen: screen, desktopImage: desktopImage, windowFrames: windowFrames, desktopBounds: desktopBounds)
         super.init(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         contentView = view
         view.windowRef = self
@@ -792,6 +791,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
 
     private let screenFrame: CGRect
     private let desktopImage: NSImage
+    private let desktopBounds: CGRect
     private let desktopCGImage: CGImage?
     private let screenPreview: NSImage?
     private let windowTargets: [WindowTarget]
@@ -862,11 +862,12 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     private var toolbarPanels: [CGRect] = []
     private var hoveredAction: ToolbarAction?
 
-    init(screen: NSScreen, desktopImage: NSImage, windowFrames: [WindowTarget]) {
+    init(screen: NSScreen, desktopImage: NSImage, windowFrames: [WindowTarget], desktopBounds: CGRect? = nil) {
         screenFrame = screen.frame
         self.desktopImage = desktopImage
+        self.desktopBounds = desktopBounds ?? ScreenCapture.screenUnion()
         desktopCGImage = desktopImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        screenPreview = ScreenCapture.crop(image: desktopImage, to: screen.frame)
+        screenPreview = ScreenCapture.crop(image: desktopImage, to: screen.frame, desktopBounds: self.desktopBounds)
         pixelScale = screen.backingScaleFactor
 
         windowTargets = windowFrames
@@ -978,6 +979,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     }
 
     private func drawDim(except hole: CGRect?) {
+        guard mouseInside || selection != nil else { return }
         let path = NSBezierPath(rect: bounds)
         if let hole {
             path.append(NSBezierPath(rect: hole))
@@ -1043,10 +1045,10 @@ final class CaptureView: NSView, NSTextFieldDelegate {
         context.saveGState()
         context.clip(to: selection)
         for (index, annotation) in annotations.enumerated() where index != editingTextIndex {
-            AnnotationRenderer.draw(annotation, in: context, sourceImage: desktopImage, origin: screenFrame.origin)
+            AnnotationRenderer.draw(annotation, in: context, sourceImage: desktopImage, origin: screenFrame.origin, desktopBounds: desktopBounds)
         }
         if let draftAnnotation {
-            AnnotationRenderer.draw(draftAnnotation, in: context, sourceImage: desktopImage, origin: screenFrame.origin)
+            AnnotationRenderer.draw(draftAnnotation, in: context, sourceImage: desktopImage, origin: screenFrame.origin, desktopBounds: desktopBounds)
         }
         context.restoreGState()
 
@@ -1173,7 +1175,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             height: clipped.height * scaleY
         )
         let globalRect = clipped.offsetBy(dx: screenFrame.minX, dy: screenFrame.minY)
-        guard let image = ScreenCapture.crop(image: desktopImage, to: globalRect) else { return }
+        guard let image = ScreenCapture.crop(image: desktopImage, to: globalRect, desktopBounds: desktopBounds) else { return }
         NSGraphicsContext.current?.imageInterpolation = .none
         image.draw(in: target)
         NSGraphicsContext.current?.imageInterpolation = .high
@@ -1182,7 +1184,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
     private func pixelColor(at point: CGPoint) -> (Int, Int, Int)? {
         guard let cgImage = desktopCGImage else { return nil }
         let global = CGRect(x: point.x + screenFrame.minX, y: point.y + screenFrame.minY, width: 1, height: 1)
-        let rect = ScreenCapture.imageRect(for: global, image: desktopImage)
+        let rect = ScreenCapture.imageRect(for: global, image: desktopImage, desktopBounds: desktopBounds)
         let x = Int(rect.minX)
         let y = Int(rect.minY)
         guard x >= 0, y >= 0, x < cgImage.width, y < cgImage.height,
@@ -2365,7 +2367,7 @@ enum SelectionHandle: CaseIterable {
 @MainActor
 enum AnnotationRenderer {
     /// `origin` is the global position of the annotations' coordinate space, used to sample the screenshot for mosaic.
-    static func draw(_ annotation: Annotation, in context: CGContext, sourceImage: NSImage, origin: CGPoint, localImage: Bool = false) {
+    static func draw(_ annotation: Annotation, in context: CGContext, sourceImage: NSImage, origin: CGPoint, localImage: Bool = false, desktopBounds: CGRect? = nil) {
         context.saveGState()
         context.setLineCap(.round)
         context.setLineJoin(.round)
@@ -2389,7 +2391,7 @@ enum AnnotationRenderer {
         case .step:
             StepMarkers.draw(annotation, in: context)
         case .mosaic:
-            drawMosaic(annotation, in: context, sourceImage: sourceImage, origin: origin, localImage: localImage)
+            drawMosaic(annotation, in: context, sourceImage: sourceImage, origin: origin, localImage: localImage, desktopBounds: desktopBounds)
         }
 
         context.restoreGState()
@@ -2443,7 +2445,7 @@ enum AnnotationRenderer {
         annotation.text.draw(at: annotation.rect.origin, withAttributes: attrs)
     }
 
-    private static func drawMosaic(_ annotation: Annotation, in context: CGContext, sourceImage: NSImage, origin: CGPoint, localImage: Bool = false) {
+    private static func drawMosaic(_ annotation: Annotation, in context: CGContext, sourceImage: NSImage, origin: CGPoint, localImage: Bool = false, desktopBounds: CGRect? = nil) {
         if localImage {
             guard let pixelated = MosaicCache.pixelated(for: sourceImage) else { return }
             context.addPath(smoothPath(annotation.points))
@@ -2454,7 +2456,7 @@ enum AnnotationRenderer {
             return
         }
         guard let pixelated = MosaicCache.pixelated(for: sourceImage),
-              let source = ScreenCapture.crop(image: pixelated, to: annotation.rect.offsetBy(dx: origin.x, dy: origin.y)) else {
+              let source = ScreenCapture.crop(image: pixelated, to: annotation.rect.offsetBy(dx: origin.x, dy: origin.y), desktopBounds: desktopBounds) else {
             return
         }
         context.addPath(smoothPath(annotation.points))
@@ -2528,22 +2530,29 @@ enum ImageExport {
     }
 }
 
+struct DesktopSnapshot {
+    let image: NSImage
+    let bounds: CGRect
+}
+
 @MainActor
 enum ScreenCapture {
-    static func captureAllScreens() -> NSImage? {
+    static func captureAllScreens() -> DesktopSnapshot? {
         let union = screenUnion()
         guard !union.isNull else { return nil }
 
-        guard let cgImage = CGWindowListCreateImage(union, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution]) else {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let captureRect = DesktopGeometry.captureRect(for: union, primaryHeight: primaryHeight)
+        guard let cgImage = CGWindowListCreateImage(captureRect, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution]) else {
             return nil
         }
 
-        return NSImage(cgImage: cgImage, size: union.size)
+        return DesktopSnapshot(image: NSImage(cgImage: cgImage, size: union.size), bounds: union)
     }
 
-    static func render(image: NSImage, result: CaptureResult) -> NSImage? {
+    static func render(image: NSImage, result: CaptureResult, desktopBounds: CGRect? = nil) -> NSImage? {
         guard let full = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
-              let cropped = full.cropping(to: imageRect(for: result.globalRect, image: image)) else {
+              let cropped = full.cropping(to: imageRect(for: result.globalRect, image: image, desktopBounds: desktopBounds)) else {
             return nil
         }
 
@@ -2567,7 +2576,7 @@ enum ScreenCapture {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
         for annotation in result.annotations {
-            AnnotationRenderer.draw(annotation, in: context, sourceImage: image, origin: result.globalRect.origin)
+            AnnotationRenderer.draw(annotation, in: context, sourceImage: image, origin: result.globalRect.origin, desktopBounds: desktopBounds)
         }
         NSGraphicsContext.restoreGraphicsState()
 
@@ -2575,8 +2584,8 @@ enum ScreenCapture {
         return NSImage(cgImage: output, size: result.globalRect.size)
     }
 
-    static func crop(image: NSImage, to globalRect: CGRect) -> NSImage? {
-        let imageRect = imageRect(for: globalRect, image: image)
+    static func crop(image: NSImage, to globalRect: CGRect, desktopBounds: CGRect? = nil) -> NSImage? {
+        let imageRect = imageRect(for: globalRect, image: image, desktopBounds: desktopBounds)
         guard imageRect.width > 0,
               imageRect.height > 0,
               let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)?.cropping(to: imageRect) else {
@@ -2585,20 +2594,16 @@ enum ScreenCapture {
         return NSImage(cgImage: cgImage, size: globalRect.size)
     }
 
-    static func imageRect(for globalRect: CGRect, image: NSImage) -> CGRect {
-        let union = screenUnion()
+    static func imageRect(for globalRect: CGRect, image: NSImage, desktopBounds: CGRect? = nil) -> CGRect {
+        let union = desktopBounds ?? screenUnion()
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return .zero
         }
 
-        let scaleX = CGFloat(cgImage.width) / union.width
-        let scaleY = CGFloat(cgImage.height) / union.height
-        let x = (globalRect.minX - union.minX) * scaleX
-        let y = (union.maxY - globalRect.maxY) * scaleY
-        return CGRect(x: x, y: y, width: globalRect.width * scaleX, height: globalRect.height * scaleY).integral
+        return DesktopGeometry.pixelRect(for: globalRect, bounds: union, pixelSize: CGSize(width: cgImage.width, height: cgImage.height))
     }
 
-    private static func screenUnion() -> CGRect {
+    static func screenUnion() -> CGRect {
         NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }
     }
 }

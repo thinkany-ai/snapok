@@ -3,19 +3,25 @@ import AppKit
 @MainActor
 enum EditorBackground {
     case gradient(Int)
+    case customGradient(start: NSColor, end: NSColor, angle: CGFloat)
     case color(NSColor)
     case image(NSImage)
 
     static let palettes: [[NSColor]] = [
         [NSColor(srgbRed: 0.25, green: 0.12, blue: 0.42, alpha: 1), NSColor(srgbRed: 0.91, green: 0.30, blue: 0.58, alpha: 1), NSColor(srgbRed: 1, green: 0.75, blue: 0.60, alpha: 1)],
         [NSColor(srgbRed: 0.05, green: 0.20, blue: 0.44, alpha: 1), NSColor(srgbRed: 0.16, green: 0.58, blue: 0.77, alpha: 1), NSColor(srgbRed: 0.62, green: 0.88, blue: 0.87, alpha: 1)],
-        [NSColor(srgbRed: 0.15, green: 0.12, blue: 0.38, alpha: 1), NSColor(srgbRed: 0.47, green: 0.36, blue: 0.77, alpha: 1), NSColor(srgbRed: 0.91, green: 0.71, blue: 0.86, alpha: 1)]
+        [NSColor(srgbRed: 0.15, green: 0.12, blue: 0.38, alpha: 1), NSColor(srgbRed: 0.47, green: 0.36, blue: 0.77, alpha: 1), NSColor(srgbRed: 0.91, green: 0.71, blue: 0.86, alpha: 1)],
+        [NSColor(srgbRed: 0.98, green: 0.32, blue: 0.36, alpha: 1), NSColor(srgbRed: 1, green: 0.78, blue: 0.38, alpha: 1)],
+        [NSColor(srgbRed: 0.04, green: 0.46, blue: 0.42, alpha: 1), NSColor(srgbRed: 0.64, green: 0.91, blue: 0.74, alpha: 1)],
+        [NSColor(srgbRed: 0.96, green: 0.56, blue: 0.50, alpha: 1), NSColor(srgbRed: 1, green: 0.90, blue: 0.74, alpha: 1)]
     ]
 
     func draw(in rect: CGRect) {
         switch self {
         case .gradient(let index):
-            NSGradient(colors: Self.palettes[index])?.draw(in: rect, angle: 35)
+            NSGradient(colors: Self.palettes[min(max(index, 0), Self.palettes.count - 1)])?.draw(in: rect, angle: 35)
+        case .customGradient(let start, let end, let angle):
+            NSGradient(starting: start, ending: end)?.draw(in: rect, angle: angle)
         case .color(let color):
             color.setFill()
             rect.fill()

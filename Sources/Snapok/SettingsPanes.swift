@@ -152,13 +152,11 @@ final class GeneralSettingsPane: PageView {
         theme.target = self
         theme.action = #selector(saveTheme)
         theme.setAccessibilityLabel(L("Theme", "主题"))
-        captureColor.colorWellStyle = .minimal
+        captureColor.useCompactSwatch()
         captureColor.supportsAlpha = false
         captureColor.target = self
         captureColor.action = #selector(saveCaptureAppearance)
         captureColor.setAccessibilityLabel(L("Screenshot selection color", "截图选框颜色"))
-        captureColor.widthAnchor.constraint(equalToConstant: 44).isActive = true
-        captureColor.heightAnchor.constraint(equalToConstant: 28).isActive = true
         captureBorder.addItems(withTitles: CaptureBorderStyle.allCases.map(\.title))
         captureBorder.target = self
         captureBorder.action = #selector(saveCaptureAppearance)

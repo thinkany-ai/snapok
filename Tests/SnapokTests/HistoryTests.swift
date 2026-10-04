@@ -112,6 +112,15 @@ struct HistoryTests {
         precondition(CaptureStyle(preferences: missing).render(image)?.size == framedSize,
                      "Unavailable backgrounds must fall back to a gradient like the editor")
         store.delete([styledItem.id])
+        var customPreferences = reuse.preferences
+        customPreferences.backgroundType = 4
+        customPreferences.customGradient = .init(start: [1, 0, 0, 1], end: [0, 0, 1, 1], angle: 90)
+        let customStyle = CaptureStyle(preferences: customPreferences)
+        let gradientItem = store.add(original: image, annotations: [], style: customStyle)!
+        precondition(gradientItem.backgroundStyle?.customGradient == customPreferences.customGradient)
+        precondition(store.rendered(for: gradientItem)?.pngData == customStyle.render(image)?.pngData,
+                     "Custom gradients must render identically for direct captures and reopened library items")
+        store.delete([gradientItem.id])
 
         // Changing folders preserves editable captures and only commits the preference on success.
         let migrationRoot = store.root.deletingLastPathComponent().appendingPathComponent("migration-" + UUID().uuidString)
