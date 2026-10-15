@@ -5,6 +5,7 @@ enum SettingsPage: CaseIterable {
     case profile
     case general
     case shortcuts
+    case textActions
     case ai
     case models
     case about
@@ -15,6 +16,7 @@ enum SettingsPage: CaseIterable {
         case .profile: return L("Profile", "个人资料")
         case .general: return L("General", "通用")
         case .shortcuts: return L("Shortcuts", "快捷键")
+        case .textActions: return L("OCR & Translation", "文字识别与翻译")
         case .ai: return L("AI Features", "AI 功能")
         case .models: return L("Models", "模型")
         case .about: return L("About", "关于")
@@ -27,6 +29,7 @@ enum SettingsPage: CaseIterable {
         case .profile: return "person.crop.circle"
         case .general: return "gearshape"
         case .shortcuts: return "keyboard"
+        case .textActions: return "text.viewfinder"
         case .ai: return "sparkles"
         case .models: return "cpu"
         case .about: return "info.circle"
@@ -155,6 +158,7 @@ final class SettingsOverlay: NSView {
         if let general = view as? GeneralSettingsPane { general.load() }
         if let models = view as? ModelsPane { models.load() }
         if let ai = view as? AIFeaturesPane { ai.load() }
+        if let textActions = view as? TextActionsPane { textActions.load() }
         content.subviews.forEach { $0.removeFromSuperview() }
         view.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(view)
@@ -172,6 +176,7 @@ final class SettingsOverlay: NSView {
         case .profile: return ProfilePane()
         case .general: return GeneralSettingsPane()
         case .shortcuts: return ShortcutsPane()
+        case .textActions: return TextActionsPane()
         case .ai: return AIFeaturesPane()
         case .models: return ModelsPane()
         case .about: return AboutPane()
