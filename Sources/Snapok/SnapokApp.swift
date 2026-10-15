@@ -42,6 +42,7 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var captureMenuItems: [NSMenuItem] = []
     private var pinMenuItems: [NSMenuItem] = []
+    private var ocrMenuItems: [(NSMenuItem, HotKeyAction)] = []
     private var updateMenuItems: [NSMenuItem] = []
     private var screenshotController: ScreenshotController!
     private var mainWindow: MainWindowController?
@@ -74,6 +75,9 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         HotKeyCenter.shared.onPress = { [weak self] in self?.startScreenshot() }
         HotKeyCenter.shared.onPinPress = { [weak self] in self?.pinLatest() }
         HotKeyCenter.shared.setHandler(.pasteStyled) { [weak self] in self?.screenshotController.pasteStyled() }
+        HotKeyCenter.shared.setHandler(.ocrCapture) { [weak self] in self?.screenshotController.startOCR() }
+        HotKeyCenter.shared.setHandler(.translateCapture) { [weak self] in self?.screenshotController.startOCR(translate: true) }
+        HotKeyCenter.shared.setHandler(.ocrSelection) { OCRController.shared.readSelection() }
         HotKeyCenter.shared.start()
         updateCaptureShortcut()
         NotificationCenter.default.addObserver(forName: HotKeyCenter.didChange, object: nil, queue: .main) { [weak self] _ in
@@ -154,6 +158,7 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
     private func relocalize() {
         captureMenuItems = []
         pinMenuItems = []
+        ocrMenuItems = []
         updateMenuItems = []
         configureMainMenu()
         statusItem.menu = makeStatusMenu()
@@ -188,6 +193,7 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         let pinLatest = fileMenu.addItem(withTitle: L("Pin Latest Screenshot", "钉住最近截图"), action: #selector(pinLatest), keyEquivalent: "")
         pinLatest.target = self
         pinMenuItems.append(pinLatest)
+        addOCRMenuItems(to: fileMenu)
         fileMenu.addItem(withTitle: L("Library", "截图库"), action: #selector(showLibrary), keyEquivalent: "l").target = self
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: L("Close Window", "关闭窗口"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -266,6 +272,7 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         let showMainWindow = NSMenuItem(title: L("Show Main Window", "显示主窗口"), action: #selector(showLibrary), keyEquivalent: "")
         showMainWindow.target = self
         menu.addItem(showMainWindow)
+        addOCRMenuItems(to: menu)
         menu.addItem(NSMenuItem(title: L("Settings…", "设置…"), action: #selector(showPreferences), keyEquivalent: ","))
         let update = NSMenuItem(title: "", action: #selector(checkForUpdates), keyEquivalent: "")
         menu.addItem(update)
@@ -275,7 +282,30 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         return menu
     }
 
+    private func addOCRMenuItems(to menu: NSMenu) {
+        let ocr = NSMenuItem(title: L("OCR Selected Area", "框选文字识别"), action: #selector(startOCR), keyEquivalent: "")
+        ocr.target = self
+        menu.addItem(ocr)
+        ocrMenuItems.append((ocr, .ocrCapture))
+        let regionTranslation = NSMenuItem(title: L("Translate Selected Area", "框选翻译"), action: #selector(startRegionTranslation), keyEquivalent: "")
+        regionTranslation.target = self
+        menu.addItem(regionTranslation)
+        ocrMenuItems.append((regionTranslation, .translateCapture))
+        let selectedText = NSMenuItem(title: L("Translate Selected Text", "选中文字翻译"), action: #selector(readSelectedText), keyEquivalent: "")
+        selectedText.target = self
+        menu.addItem(selectedText)
+        ocrMenuItems.append((selectedText, .ocrSelection))
+        let lastResult = NSMenuItem(title: L("Show Last OCR / Translation Result", "查看上次识别 / 翻译结果"), action: #selector(showLastTextResult), keyEquivalent: "")
+        lastResult.target = self
+        menu.addItem(lastResult)
+    }
+
     private func updateCaptureShortcut() {
+        for (item, action) in ocrMenuItems {
+            let key = HotKeyCenter.shared.hotKey(for: action)
+            item.keyEquivalent = key.menuKeyEquivalent
+            item.keyEquivalentModifierMask = key.menuModifiers
+        }
         let hotKey = HotKeyCenter.shared.current
         for item in captureMenuItems {
             item.keyEquivalent = hotKey.menuKeyEquivalent
@@ -291,6 +321,14 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
     @objc private func startScreenshot() {
         screenshotController.start()
     }
+
+    @objc private func startOCR() { screenshotController.startOCR() }
+
+    @objc private func startRegionTranslation() { screenshotController.startOCR(translate: true) }
+
+    @objc private func readSelectedText() { OCRController.shared.readSelection() }
+
+    @objc private func showLastTextResult() { OCRController.shared.showLastResult() }
 
     @objc private func pinLatest() {
         screenshotController.pinLatest()
@@ -320,6 +358,18 @@ final class ScreenshotController {
     private var captureWindowFrames: [WindowTarget] = []
     private var captureFrontmostApp: String?
     private var preparingCapture = false
+    private var ocrCapture = false
+    private var translateCapture = false
+    private var ocrOriginApplication: NSRunningApplication?
+
+    func startOCR(translate: Bool = false) {
+        guard windows.isEmpty, !preparingCapture, scrollSession == nil else { return }
+        OCRController.shared.cancelPending()
+        ocrOriginApplication = NSWorkspace.shared.frontmostApplication
+        ocrCapture = true
+        translateCapture = translate
+        start()
+    }
     /// The screenshot finished most recently with ✓ (copy), save, or the editor's Copy Image.
     /// The pin shortcut pins it where it was captured; `rect` is nil when it should be centered.
     private var latestCapture: (image: NSImage, rect: CGRect?, screen: NSScreen?)?
@@ -419,12 +469,15 @@ final class ScreenshotController {
                 let granted = await ScreenRecordingPermission.request()
                 guard granted else {
                     self.preparingCapture = false
+                    self.ocrCapture = false
+                    self.translateCapture = false
+                    self.ocrOriginApplication = nil
                     log("capture blocked: no screen recording access")
                     if !firstAsk { ScreenRecordingPermission.explainMissingAccess() }
                     return
                 }
             }
-            if ComponentSnappingPermission.offerIfNeeded() {
+            if !self.ocrCapture && ComponentSnappingPermission.offerIfNeeded() {
                 self.preparingCapture = false
                 return
             }
@@ -439,6 +492,9 @@ final class ScreenshotController {
 
     private func beginCapture(windowFrames: [WindowTarget]) async {
         guard let snapshots = await ScreenCapture.captureAllScreens() else {
+            ocrCapture = false
+            translateCapture = false
+            ocrOriginApplication = nil
             log("screen capture failed, access=\(CGPreflightScreenCaptureAccess())")
             NSSound.beep()
             return
@@ -448,6 +504,7 @@ final class ScreenshotController {
             guard let snapshot = snapshots.first(where: { $0.bounds == screen.frame }) else { return nil }
             let window = CaptureWindow(screen: screen, desktopImage: snapshot.image, windowFrames: windowFrames, desktopBounds: snapshot.bounds)
             window.captureDelegate = self
+            window.ocrMode = ocrCapture
             return window
         }
 
@@ -458,6 +515,17 @@ final class ScreenshotController {
     }
 
     private func finish(_ result: CaptureResult, mode: CaptureFinishMode, from window: CaptureWindow) {
+        if ocrCapture {
+            let image = screenSnapshots.first(where: { $0.bounds == window.frame }).flatMap {
+                ScreenCapture.crop(image: $0.image, to: result.globalRect, desktopBounds: $0.bounds)
+            }
+            let screen = window.screen
+            let shouldTranslate = translateCapture
+            closeWindows()
+            if let image { OCRController.shared.recognize(image, screen: screen, translate: shouldTranslate) }
+            else { OCRController.shared.captureFailed(screen: screen) }
+            return
+        }
         if mode == .scroll {
             closeWindows()
             startScrollingCapture(in: result.globalRect)
@@ -609,11 +677,18 @@ final class ScreenshotController {
     }
 
     private func closeWindows() {
+        let origin = ocrCapture ? ocrOriginApplication : nil
+        ocrOriginApplication = nil
+        ocrCapture = false
+        translateCapture = false
         windows.forEach { $0.orderOut(nil) }
         windows.removeAll()
         screenSnapshots.removeAll()
         MosaicCache.clear()
         NSCursor.arrow.set()
+        if NSApp.isActive, let origin, origin.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            origin.activate(options: [])
+        }
     }
 }
 
@@ -747,6 +822,7 @@ protocol CaptureWindowDelegate: AnyObject {
 @MainActor
 final class CaptureWindow: NSWindow {
     weak var captureDelegate: CaptureWindowDelegate?
+    var ocrMode = false
 
     init(screen: NSScreen, desktopImage: NSImage, windowFrames: [WindowTarget], desktopBounds: CGRect? = nil) {
         let view = CaptureView(screen: screen, desktopImage: desktopImage, windowFrames: windowFrames, desktopBounds: desktopBounds)
@@ -1266,7 +1342,7 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             drawAnnotations(in: selection)
             drawSelectionFrame(selection)
             drawSizeLabel(for: selection)
-            if isAdjustingSelection {
+            if isAdjustingSelection || windowRef?.ocrMode == true {
                 toolbarButtons = []
                 toolbarPanels = []
             } else {
@@ -1338,7 +1414,9 @@ final class CaptureView: NSView, NSTextFieldDelegate {
 
     private func drawSizeLabel(for rect: CGRect) {
         var text = "\(Int((rect.width * pixelScale).rounded())) × \(Int((rect.height * pixelScale).rounded()))"
-        if selection == nil {
+        if windowRef?.ocrMode == true {
+            text += L(" · OCR: drag and release to recognize · Esc cancels", " · OCR：框选后松手识别 · Esc 取消")
+        } else if selection == nil {
             text += AXIsProcessTrusted()
                 ? L("  · Scroll to switch regions · ⌥ Whole window", "  · 滚轮切换区域 · ⌥ 整窗")
                 : L("  · Window snapping · Enable component snapping in Settings → General", "  · 整窗吸附 · 设置 → 通用中启用组件吸附")
@@ -2082,6 +2160,10 @@ final class CaptureView: NSView, NSTextFieldDelegate {
             break
         }
         dragState = .idle
+        if windowRef?.ocrMode == true, let selection, selection.width >= 4, selection.height >= 4 {
+            finish(.copy)
+            return
+        }
         if selection == nil { updateFocus() }
         updateCursor()
         needsDisplay = true

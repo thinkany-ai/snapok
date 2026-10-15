@@ -702,6 +702,7 @@ final class LibraryPane: PageView, NSCollectionViewDataSource, NSCollectionViewD
             menu.addItem(withTitle: L("Copy Image", "复制图片"), action: #selector(copySelected), keyEquivalent: "")
             menu.addItem(withTitle: L("Pin to Screen", "钉在屏幕上"), action: #selector(pinSelected), keyEquivalent: "")
             menu.addItem(withTitle: L("Copy Recognized Text", "复制识别出的文字"), action: #selector(copyText), keyEquivalent: "")
+            menu.addItem(withTitle: L("Translate Screenshot Text", "翻译截图文字"), action: #selector(translateSelected), keyEquivalent: "")
             menu.addItem(withTitle: L("Rename…", "重命名…"), action: #selector(renameSelected), keyEquivalent: "")
             menu.addItem(withTitle: L("Show in Finder", "在 Finder 中显示"), action: #selector(revealSelected), keyEquivalent: "")
             menu.addItem(.separator())
@@ -729,6 +730,12 @@ final class LibraryPane: PageView, NSCollectionViewDataSource, NSCollectionViewD
         guard let item = selectedItems.first else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(item.ocrText, forType: .string)
+    }
+
+    @objc private func translateSelected() {
+        guard selectedItems.count == 1, let item = selectedItems.first else { return }
+        // Recognize the visible, edited screenshot, never stale OCR or text hidden by redactions.
+        OCRController.shared.translateImage(HistoryStore.shared.rendered(for: item), screen: window?.screen)
     }
 
     @objc private func renameSelected() {

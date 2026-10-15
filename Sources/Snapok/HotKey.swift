@@ -107,6 +107,9 @@ enum HotKeyAction: UInt32, CaseIterable, Sendable {
     case pin = 2
     /// Pastes the screenshot just copied, framed in the last editing style. Only armed for a while after a capture.
     case pasteStyled = 3
+    case ocrCapture = 4
+    case ocrSelection = 5
+    case translateCapture = 6
 
     /// Registered only while armed, so it does not take the key from other apps the rest of the time.
     var isArmedOnly: Bool { self == .pasteStyled }
@@ -116,6 +119,9 @@ enum HotKeyAction: UInt32, CaseIterable, Sendable {
         case .capture: return HotKey.preferenceKey
         case .pin: return "app.pinHotKey"
         case .pasteStyled: return "app.pasteStyledHotKey"
+        case .ocrCapture: return "app.ocrCaptureHotKey"
+        case .ocrSelection: return "app.ocrSelectionHotKey"
+        case .translateCapture: return "app.translateCaptureHotKey"
         }
     }
 
@@ -124,6 +130,9 @@ enum HotKeyAction: UInt32, CaseIterable, Sendable {
         case .capture: return AppChannel.defaultHotKey
         case .pin: return AppChannel.defaultPinHotKey
         case .pasteStyled: return AppChannel.defaultPasteStyledHotKey
+        case .translateCapture: return HotKey(keyCode: UInt32(kVK_ANSI_T), modifiers: UInt32(controlKey | optionKey), key: "T")
+        case .ocrCapture: return HotKey(keyCode: UInt32(kVK_ANSI_O), modifiers: UInt32(controlKey | optionKey), key: "O")
+        case .ocrSelection: return HotKey(keyCode: UInt32(kVK_ANSI_O), modifiers: UInt32(controlKey | optionKey | shiftKey), key: "O")
         }
     }
 }
