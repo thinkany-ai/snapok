@@ -62,15 +62,26 @@ final class OCRController {
     private let notice = TextActionNotice()
     private let preferences: TextActionPreferences
     private let pasteboard: NSPasteboard
+    private let recognizer: @Sendable (CGImage) async throws -> String
     private let translator: @Sendable (String, Locale.Language) async throws -> String
 
-    init(preferences: TextActionPreferences = TextActionPreferences(), pasteboard: NSPasteboard = .general,
+    convenience init(preferences: TextActionPreferences = TextActionPreferences(), pasteboard: NSPasteboard = .general,
+                     translator: @escaping @Sendable (String, Locale.Language) async throws -> String = { text, target in
+                         try await SelectedTextTranslationService.translate(text, target: target)
+                     }) {
+        self.init(preferences: preferences, pasteboard: pasteboard,
+                  recognizer: { try await OCRController.recognizeText($0) }, translator: translator)
+    }
+
+    init(preferences: TextActionPreferences, pasteboard: NSPasteboard,
+         recognizer: @escaping @Sendable (CGImage) async throws -> String,
          translator: @escaping @Sendable (String, Locale.Language) async throws -> String = { text, target in
              try await SelectedTextTranslationService.translate(text, target: target)
          }) {
         self.preferences = preferences
         self.pasteboard = pasteboard
         self.translator = translator
+        self.recognizer = recognizer
     }
 
     func cancelPending() {
@@ -89,12 +100,37 @@ final class OCRController {
         }
     }
 
-    func recognize(_ image: NSImage, screen: NSScreen? = nil) {
+    func recognize(_ image: NSImage, screen: NSScreen? = nil, translate: Bool = false) {
         let screen = screen ?? actionScreen()
-        begin(L("Recognizing text…", "正在识别文字…"), screen: screen)
+        begin(translate ? L("Recognizing text for translation…", "正在识别待翻译文字…") : L("Recognizing text…", "正在识别文字…"), screen: screen)
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             fail(L("Unable to read this image.", "无法读取这张图片。"), screen: screen); return
         }
+        let recognize = recognizer
+        task = Task { [weak self] in
+            do {
+                let text = try await recognize(cgImage)
+                guard !Task.isCancelled, let self else { return }
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    self.fail(L("No text found. Try a larger or sharper area.", "未识别到文字，请尝试更清晰或更大的选区。"), screen: screen)
+                    return
+                }
+                if translate {
+                    self.showTranslationProgress(screen: screen)
+                    let translated = try await self.translatedText(text)
+                    guard !Task.isCancelled else { return }
+                    self.complete(translated, kind: .translation, screen: screen)
+                } else {
+                    self.complete(text, kind: .recognition, screen: screen)
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.fail((translate ? L("Image translation failed: ", "图片文字翻译失败：") : L("Recognition failed: ", "识别失败：")) + error.localizedDescription, screen: screen)
+            }
+        }
+    }
+
+    nonisolated private static func recognizeText(_ cgImage: CGImage) async throws -> String {
         let worker = Task.detached(priority: .userInitiated) { () throws -> String in
             let request = VNRecognizeTextRequest()
             request.recognitionLevel = .accurate
@@ -128,16 +164,31 @@ final class OCRController {
             }
             return text
         }
-        task = Task { [weak self] in
-            do {
-                let text = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
-                guard !Task.isCancelled else { return }
-                self?.complete(text, kind: .recognition, screen: screen)
-            } catch {
-                guard !Task.isCancelled else { return }
-                self?.fail(L("Recognition failed: ", "识别失败：") + error.localizedDescription, screen: screen)
-            }
+        return try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+    }
+
+    private func showTranslationProgress(screen: NSScreen?) {
+        guard preferences.showSideNotice else { return }
+        notice.show(title: L("Translating recognized text…", "正在翻译识别出的文字…"),
+                    detail: preferences.translationProvider == .baidu ? L("Translating with Baidu…", "正在使用百度翻译…") : L("Translating on device…", "正在本机翻译…"),
+                    success: false, screen: screen, duration: 30)
+    }
+
+    private func translatedText(_ text: String) async throws -> String {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw SelectedTextTranslationError.empty }
+        guard text.count <= 20_000 else { throw SelectedTextTranslationError.tooLong }
+        let target = SelectedTextTranslator.target(for: text, preference: preferences.translationTarget)
+        return try await translator(text, target)
+    }
+
+    func translateImage(_ image: NSImage?, screen: NSScreen? = nil) {
+        guard let image else {
+            let screen = screen ?? actionScreen()
+            begin(L("Translating screenshot text…", "正在翻译截图文字…"), screen: screen)
+            fail(L("Unable to read this screenshot. It may have been moved or deleted. Clipboard unchanged.", "无法读取这张截图，文件可能已移动或删除。剪贴板未改动。"), screen: screen)
+            return
         }
+        recognize(image, screen: screen, translate: true)
     }
 
     func readSelection() {
@@ -232,7 +283,7 @@ final class OCRController {
         } else if lastOutcome != nil {
             presentLastResult()
         } else {
-            notice.show(title: L("No result yet", "暂无识别或翻译结果"), detail: L("Use an OCR or translation shortcut first.", "请先使用框选识别或选中文字翻译快捷键。"), success: false, screen: actionScreen())
+            notice.show(title: L("No result yet", "暂无识别或翻译结果"), detail: L("Use an OCR or translation shortcut first.", "请先使用框选识别、框选翻译或选中文字翻译快捷键。"), success: false, screen: actionScreen())
         }
     }
 

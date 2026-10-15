@@ -41,7 +41,7 @@ final class TextActionsPane: SectionedPageView {
             button.setAccessibilityIdentifier(identifier)
         }
         addSection(L("After recognition or translation", "识别 / 翻译完成后"), rows: [
-            Self.row(autoCopy, hint: L("Area OCR copies the formatted text; selected-text translation copies the translation.", "框选识别复制整理后的文字；选中文字翻译复制译文。默认开启。")),
+            Self.row(autoCopy, hint: L("Area OCR copies formatted text; region, screenshot and selected-text translation copy the translation.", "框选识别复制整理后的文字；框选、截图库和选中文字翻译复制译文。默认开启。")),
             Self.row(sideNotice, hint: L("A translucent, multiline preview appears at the top right for 5–12 seconds without taking focus or blocking clicks.", "右上角显示半透明多行预览，按内容停留 5–12 秒；不抢焦点、不挡鼠标。")),
             Self.row(sound, hint: L("Uses system sounds and follows the system volume. Can be disabled independently.", "使用系统音效并遵循系统音量，可单独关闭。")),
             Self.row(resultWindow, hint: L("Off by default. You can always open the last result from the Snapok menu.", "默认关闭，不再自动弹出编辑框；仍可从 Snapok 菜单手动查看上次结果。"))
@@ -58,7 +58,7 @@ final class TextActionsPane: SectionedPageView {
         provider.action = #selector(saveProvider)
         provider.identifier = NSUserInterfaceItemIdentifier("textActions.provider")
         provider.setAccessibilityLabel(L("Translation service", "翻译服务"))
-        addSection(L("Translation service", "翻译服务"), rows: [Self.row(provider, hint: L("Baidu sends the selected text to Baidu via HTTPS. Area OCR stays on-device. No automatic provider switching.", "百度翻译会通过 HTTPS 将选中文字发送至百度；框选 OCR 仍在本机处理。不会自动切换服务。"))])
+        addSection(L("Translation service", "翻译服务"), rows: [Self.row(provider, hint: L("Baidu sends selected or recognized text via HTTPS, not screenshot images. OCR stays on-device. No automatic provider switching.", "百度翻译会通过 HTTPS 发送选中或识别出的文字，不发送截图；OCR 在本机处理。不会自动切换服务。"))])
         baiduID.placeholderString = "APP ID"
         baiduID.identifier = NSUserInterfaceItemIdentifier("textActions.baiduAppID")
         baiduID.setAccessibilityLabel("Baidu APP ID")
@@ -141,7 +141,8 @@ final class TextActionsPane: SectionedPageView {
         targetLanguage.identifier = NSUserInterfaceItemIdentifier("textActions.targetLanguage")
         targetLanguage.setAccessibilityLabel(L("Translation target language", "翻译目标语言"))
         targetLanguage.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        addSection(L("Selected-text translation", "选中文字翻译"), rows: [Self.row(targetLanguage, title: L("Target language", "目标语言"), hint: L("Select actual text in another app, then press your shortcut. Baidu needs network access, not system language packs.", "在其他应用中选中实际文本后按快捷键；百度翻译需要联网，不需要下载系统语言包。"))])
+        addSection(L("Text translation", "文字翻译"), rows: [Self.row(targetLanguage, title: L("Target language", "目标语言"), hint: L("Shared by region, library and selected-text translation. Baidu needs network access, not system language packs.", "框选翻译、截图库翻译和选中文字翻译共用目标语言；百度翻译需要联网，无需系统语言包。"))])
+        add(Self.footnote(L("Use Translate Selected Area from the menu or its global shortcut, then drag and release. In the library, right-click one screenshot and choose Translate Screenshot Text. Both recognize text locally before translating; the original screenshot is not modified.", "从菜单或全局快捷键启动「框选翻译」，拖动框选并松开鼠标即可。在截图库右键单张截图，选择「翻译截图文字」。两者均先在本机识别再翻译，不修改原截图。")))
         sourceLanguage.addItems(withTitles: TranslationTargets.all.map(\.name))
         sourceLanguage.selectItem(at: 2)
         sourceLanguage.setAccessibilityLabel(L("Language pack source language", "语言包原文语言"))

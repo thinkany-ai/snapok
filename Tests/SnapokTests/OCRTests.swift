@@ -199,7 +199,7 @@ struct OCRTests {
         check(preferences.translationTarget == "ja", "Target-language menu saves")
         check(SettingsPage.allCases.contains(.textActions), "Settings navigation exposes text actions")
         check(controls.contains { $0.identifier?.rawValue == "textActions.downloadLanguages" }, "Settings provide explicit language-pack setup")
-        check(controls.compactMap { ($0 as? NSTextField)?.stringValue }.contains { $0.contains(L("Selected-text translation", "选中文字翻译")) }, "Settings label is translation")
+        check(controls.compactMap { ($0 as? NSTextField)?.stringValue }.contains { $0 == L("Text translation", "文字翻译") }, "Settings label is translation")
 
         let guideButton = controls.first { $0.identifier?.rawValue == "textActions.baiduGuideToggle" } as! NSButton
         let guide = controls.first { $0.identifier?.rawValue == "textActions.baiduGuide" } as! NSStackView
@@ -374,6 +374,89 @@ struct OCRTests {
         await cancelledTask?.value
         check(board.changeCount == beforeCancel, "Cancellation prevents delivery")
         check(NSApp.windows.filter(\.isVisible).map(ObjectIdentifier.init) == visibleBefore, "Failures and cancellation remain silent")
+        // Image workflows share one cancellable OCR -> translation task. The OCR output
+        // must never reach the pasteboard before translation succeeds.
+        let testImage = NSImage(size: NSSize(width: 20, height: 20), flipped: false) { rect in
+            NSColor.white.setFill()
+            rect.fill()
+            return true
+        }
+        let imageAction = OCRController(preferences: preferences, pasteboard: board,
+                                       recognizer: { _ in "Hello world" }) { source, target in
+            precondition(source == "Hello world" && target.languageCode?.identifier == "zh")
+            return "图片译文"
+        }
+        let beforeImage = board.changeCount
+        imageAction.recognize(testImage, translate: true)
+        await imageAction.task?.value
+        check(imageAction.lastOutcome?.kind == .translation && imageAction.lastOutcome?.text == "图片译文", "Region OCR feeds translation")
+        check(board.string(forType: .string) == "图片译文" && board.changeCount == beforeImage + 1, "Only translation is copied, never intermediate OCR")
+        imageAction.translateImage(testImage)
+        await imageAction.task?.value
+        check(imageAction.lastOutcome?.text == "图片译文" && imageAction.lastError == nil, "Library screenshot uses OCR translation pipeline")
+        let beforeMissing = board.changeCount
+        imageAction.translateImage(nil)
+        check(imageAction.lastError != nil && board.changeCount == beforeMissing, "Missing library screenshot preserves clipboard")
+        imageAction.recognize(testImage)
+        await imageAction.task?.value
+        check(imageAction.lastOutcome?.kind == .recognition && imageAction.lastOutcome?.text == "Hello world", "OCR-only action stays recognition-only")
+        let emptyImage = OCRController(preferences: preferences, pasteboard: board,
+                                       recognizer: { _ in "  \n" }) { _, _ in
+            preconditionFailure("Empty OCR must not call the translator")
+        }
+        let beforeEmpty = board.changeCount
+        emptyImage.translateImage(testImage)
+        await emptyImage.task?.value
+        check(emptyImage.lastError != nil && board.changeCount == beforeEmpty, "Empty OCR preserves clipboard and skips provider")
+        let brokenOCR = OCRController(preferences: preferences, pasteboard: board,
+                                      recognizer: { _ in throw SelectedTextTranslationError.invalidResponse }) { _, _ in
+            preconditionFailure("Failed OCR must not call the translator")
+        }
+        brokenOCR.translateImage(testImage)
+        await brokenOCR.task?.value
+        check(brokenOCR.lastError != nil && board.changeCount == beforeEmpty, "OCR errors preserve clipboard")
+        let failedImage = OCRController(preferences: preferences, pasteboard: board,
+                                       recognizer: { _ in "Hello world" }) { _, _ in throw SelectedTextTranslationError.invalidResponse }
+        failedImage.translateImage(testImage)
+        await failedImage.task?.value
+        check(failedImage.lastError != nil && board.changeCount == beforeEmpty, "Image translation failure does not copy OCR text")
+        let slowOCR = OCRController(preferences: preferences, pasteboard: board, recognizer: { _ in
+            try? await Task.sleep(for: .milliseconds(40))
+            return "old OCR"
+        }) { source, _ in source }
+        slowOCR.translateImage(testImage)
+        let staleOCR = slowOCR.task
+        slowOCR.translateSelection("new translation")
+        await slowOCR.task?.value
+        await staleOCR?.value
+        check(board.string(forType: .string) == "new translation", "Cancelled OCR cannot overwrite a newer translation")
+        let slowTranslation = OCRController(preferences: preferences, pasteboard: board,
+                                            recognizer: { _ in "Hello world" }) { _, _ in
+            try? await Task.sleep(for: .milliseconds(100))
+            return "cancelled image translation"
+        }
+        let beforeImageCancel = board.changeCount
+        slowTranslation.translateImage(testImage)
+        let cancelledImageTask = slowTranslation.task
+        try? await Task.sleep(for: .milliseconds(30))
+        slowTranslation.cancelPending()
+        await cancelledImageTask?.value
+        check(board.changeCount == beforeImageCancel, "Cancellation during image translation prevents delivery")
+        let oversizedOCR = OCRController(preferences: preferences, pasteboard: board,
+                                          recognizer: { _ in String(repeating: "x", count: 20_001) }) { _, _ in
+            preconditionFailure("Oversized OCR must not call the translator")
+        }
+        oversizedOCR.translateImage(testImage)
+        await oversizedOCR.task?.value
+        check(oversizedOCR.lastError != nil && board.changeCount == beforeImageCancel, "Oversized OCR is rejected before sending")
+        preferences.autoCopy = false
+        imageAction.translateImage(testImage)
+        await imageAction.task?.value
+        check(imageAction.lastOutcome?.text == "图片译文" && imageAction.lastOutcome?.copied == false && board.changeCount == beforeImageCancel, "Image translation honors disabled auto-copy")
+        preferences.autoCopy = true
+        check(HotKeyAction.translateCapture.defaultHotKey.symbol == "⌃⌥T", "Region translation has its own shortcut")
+        check(Set(HotKeyAction.allCases.map(\.preferenceKey)).count == HotKeyAction.allCases.count, "Global shortcuts have independent preferences")
+        check(NSApp.windows.filter(\.isVisible).map(ObjectIdentifier.init) == visibleBefore, "Image actions honor silent result preferences")
         print("Passed \(checks) OCR / translation checks: formatting, shortcuts, defaults, switches, clipboard, UI, translation delivery, errors and cancellation")
     }
 }

@@ -830,6 +830,8 @@ final class ShortcutsPane: SectionedPageView {
             Self.row(L("Take screenshot", "截图"), ShortcutRecorder(binding: .global(.capture))),
             Self.row(L("OCR selected area", "框选文字识别"), ShortcutRecorder(binding: .global(.ocrCapture)),
                      subtitle: L("Drag an area to recognize text locally. Escape cancels.", "拖动框选，松开鼠标后离线识别；Esc 取消。")),
+            Self.row(L("Translate selected area", "框选翻译"), ShortcutRecorder(binding: .global(.translateCapture)),
+                     subtitle: L("Drag an area, then release to recognize and translate its text. Escape cancels.", "按快捷键后拖动框选，松开鼠标即识别并翻译；Esc 取消。")),
             Self.row(L("Translate selected text", "选中文字翻译"), ShortcutRecorder(binding: .global(.ocrSelection)),
                      subtitle: L("Translate selected text in the front app. Requires Accessibility access; copies the translation by default.", "读取前台应用选中文字并翻译，需要辅助功能权限；默认自动复制译文。")),
             Self.row(L("Pin", "钉图"), ShortcutRecorder(binding: .global(.pin)),

@@ -69,6 +69,7 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         HotKeyCenter.shared.onPinPress = { [weak self] in self?.pinLatest() }
         HotKeyCenter.shared.setHandler(.pasteStyled) { [weak self] in self?.screenshotController.pasteStyled() }
         HotKeyCenter.shared.setHandler(.ocrCapture) { [weak self] in self?.screenshotController.startOCR() }
+        HotKeyCenter.shared.setHandler(.translateCapture) { [weak self] in self?.screenshotController.startOCR(translate: true) }
         HotKeyCenter.shared.setHandler(.ocrSelection) { OCRController.shared.readSelection() }
         HotKeyCenter.shared.start()
         updateCaptureShortcut()
@@ -271,6 +272,10 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         ocr.target = self
         menu.addItem(ocr)
         ocrMenuItems.append((ocr, .ocrCapture))
+        let regionTranslation = NSMenuItem(title: L("Translate Selected Area", "框选翻译"), action: #selector(startRegionTranslation), keyEquivalent: "")
+        regionTranslation.target = self
+        menu.addItem(regionTranslation)
+        ocrMenuItems.append((regionTranslation, .translateCapture))
         let selectedText = NSMenuItem(title: L("Translate Selected Text", "选中文字翻译"), action: #selector(readSelectedText), keyEquivalent: "")
         selectedText.target = self
         menu.addItem(selectedText)
@@ -303,6 +308,8 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startOCR() { screenshotController.startOCR() }
+
+    @objc private func startRegionTranslation() { screenshotController.startOCR(translate: true) }
 
     @objc private func readSelectedText() { OCRController.shared.readSelection() }
 
@@ -337,13 +344,15 @@ final class ScreenshotController {
     private var captureFrontmostApp: String?
     private var preparingCapture = false
     private var ocrCapture = false
+    private var translateCapture = false
     private var ocrOriginApplication: NSRunningApplication?
 
-    func startOCR() {
+    func startOCR(translate: Bool = false) {
         guard windows.isEmpty, !preparingCapture, scrollSession == nil else { return }
         OCRController.shared.cancelPending()
         ocrOriginApplication = NSWorkspace.shared.frontmostApplication
         ocrCapture = true
+        translateCapture = translate
         start()
     }
     /// The screenshot finished most recently with ✓ (copy), save, or the editor's Copy Image.
@@ -446,6 +455,8 @@ final class ScreenshotController {
                 guard granted else {
                     self.preparingCapture = false
                     self.ocrCapture = false
+                    self.translateCapture = false
+                    self.ocrOriginApplication = nil
                     log("capture blocked: no screen recording access")
                     if !firstAsk { ScreenRecordingPermission.explainMissingAccess() }
                     return
@@ -467,6 +478,8 @@ final class ScreenshotController {
     private func beginCapture(windowFrames: [WindowTarget]) async {
         guard let snapshots = await ScreenCapture.captureAllScreens() else {
             ocrCapture = false
+            translateCapture = false
+            ocrOriginApplication = nil
             log("screen capture failed, access=\(CGPreflightScreenCaptureAccess())")
             NSSound.beep()
             return
@@ -492,8 +505,9 @@ final class ScreenshotController {
                 ScreenCapture.crop(image: $0.image, to: result.globalRect, desktopBounds: $0.bounds)
             }
             let screen = window.screen
+            let shouldTranslate = translateCapture
             closeWindows()
-            if let image { OCRController.shared.recognize(image, screen: screen) }
+            if let image { OCRController.shared.recognize(image, screen: screen, translate: shouldTranslate) }
             else { OCRController.shared.captureFailed(screen: screen) }
             return
         }
@@ -651,6 +665,7 @@ final class ScreenshotController {
         let origin = ocrCapture ? ocrOriginApplication : nil
         ocrOriginApplication = nil
         ocrCapture = false
+        translateCapture = false
         windows.forEach { $0.orderOut(nil) }
         windows.removeAll()
         screenSnapshots.removeAll()
