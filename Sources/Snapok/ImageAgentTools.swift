@@ -361,8 +361,9 @@ enum AgentTranslationError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .needsSetup(let reason):
-            return reason + L(" Or sign in to Snapok, or add your own model in Settings → Models.",
-                              "也可以登录 Snapok，或在「设置 → 模型」里配置自己的模型。")
+            return reason + (SnapokCloud.isAvailable
+                ? L(" Or sign in to Snapok, or add your own model in Settings → Models.", "也可以登录 Snapok，或在「设置 → 模型」里配置自己的模型。")
+                : L(" Or add your own model in Settings → Models.", "也可以在「设置 → 模型」里配置自己的模型。"))
         }
     }
 }

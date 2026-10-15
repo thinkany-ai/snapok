@@ -135,7 +135,7 @@ final class AIFeaturesPane: SectionedPageView {
         agentOwnModel.target = self
         agentOwnModel.action = #selector(save)
         agentOwnModel.cell?.wraps = true
-        let rows = [autoName, agentOwnModel].map { checkbox -> NSView in
+        let rows = (SnapokCloud.isAvailable ? [autoName, agentOwnModel] : [autoName]).map { checkbox -> NSView in
             let row = NSStackView(views: [checkbox])
             row.edgeInsets = NSEdgeInsets(top: 12, left: 18, bottom: 12, right: 18)
             return row
@@ -146,12 +146,17 @@ final class AIFeaturesPane: SectionedPageView {
         Self.fill(list, with: rows)
         add(Self.card(list, inset: NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)))
         // One line per feature, so it reads as a list rather than a paragraph.
+        let cloud = SnapokCloud.isAvailable
         let notes = [
-            L("Translation: your default model, else on-device translation (macOS 26 and later), else Snapok Cloud.",
-              "翻译：优先用默认模型，其次用系统翻译（macOS 26 起），再次用 Snapok 云端。"),
+            cloud ? L("Translation: your default model, else on-device translation (macOS 26 and later), else Snapok Cloud.",
+                      "翻译：优先用默认模型，其次用系统翻译（macOS 26 起），再次用 Snapok 云端。")
+                  : L("Translation: your default model, else on-device translation (macOS 26 and later).",
+                      "翻译：优先用默认模型，其次用系统翻译（macOS 26 起）。"),
             L("Automatic naming: your default model (it receives the screenshot), else Apple's on-device model, else the app name and first line of text.",
               "自动命名：优先用默认模型（会发送截图），其次用系统本机模型，否则按来源应用和截图第一行文字命名。"),
-            L("Generating images in Snapok Agent always runs on Snapok Cloud.", "Snapok Agent 生成图片：始终在 Snapok 云端完成。"),
+            cloud ? L("Generating images in Snapok Agent always runs on Snapok Cloud.", "Snapok Agent 生成图片：始终在 Snapok 云端完成。")
+                  : L("Generating images in Snapok Agent needs Snapok Cloud, which builds from source don't include.",
+                      "Snapok Agent 生成图片需要 Snapok 云端，源码构建的版本不包含。"),
             L("Text recognition and redaction always run on this Mac.", "文字识别和打码：始终在本机完成。")
         ]
         add(Self.footnote(notes.map { "• " + $0 }.joined(separator: "\n")), spacingBefore: 8)

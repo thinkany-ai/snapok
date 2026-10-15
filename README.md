@@ -13,7 +13,7 @@
 
 ![Snapok Agent redacting the avatars, names, and phone number in a chat screenshot](docs/snapok-agent.webp)
 
-Snapok is a native screenshot utility built with Swift and AppKit. Its main window is a library of your past screenshots. Close that window to hide the Dock icon; Snapok stays in the menu bar, and the global hotkey keeps working.
+Snapok is a native screenshot utility built with Swift and AppKit. Its main window is a library of your past screenshots. Close that window to hide the Dock icon; Snapok stays in the menu bar, and the global hotkey keeps working. New installs open at login, in the menu bar only, so the shortcut always works; turn it off in onboarding or Settings → General.
 
 > Early development: builds from `dev` are previews, not stable releases. The app follows the system language (English or Simplified Chinese) by default; Settings → General → Language can pin either one (applies immediately).
 
@@ -118,6 +118,8 @@ Rows that stay put while the rest scrolls, such as a toolbar or a message box, a
 ### Snapok Agent
 
 Open **Snapok Agent** from the sidebar, or **AI Tools → Ask Snapok Agent…** in the editor, which attaches the screenshot and fills in a request. Snapok finds text, sensitive values, avatars, and names on your Mac, and a model plans which of Snapok's tools to use: your own model from Settings → Models (free), or Snapok Cloud when you are signed in (credits). The edits are drawn locally. Only changes that need an image model are sent to the cloud agent, which streams its text and steps; a task stops after 10 minutes, and you get a notification when a long one finishes in the background.
+
+Snapok Cloud (sign-in, credits, and image generation) is only in the builds this repository publishes, which bake in its address. Builds from source leave it out: Snapok Agent and translation use your own model or on-device translation, and the sign-in button is hidden. To point any build at a backend, for example a local one: `defaults write ai.thinkany.snapok.dev cloud.baseURL http://localhost:3001` (use `ai.thinkany.snapok` for the release build; `defaults delete … cloud.baseURL` undoes it).
 
 ### Image editor
 

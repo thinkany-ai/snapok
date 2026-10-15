@@ -111,6 +111,8 @@ jobs:
           # Only this repository's builds carry telemetry keys; forks and builds from source report nothing.
           POSTHOG_PROJECT_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          # Official builds of both channels sign in to snapok.app; builds from source have no Snapok Cloud.
+          SNAPOK_CLOUD_URL: https://snapok.app
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then

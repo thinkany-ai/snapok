@@ -138,6 +138,9 @@ final class CardView: NSView {
 final class GeneralSettingsPane: PageView {
     private let copyStyled = NSButton(checkboxWithTitle: L("Copy screenshots in your last editing style", "复制截图时套用上次编辑的样式"), target: nil, action: nil)
     private let autoSave = NSButton(checkboxWithTitle: L("Automatically save screenshots to the library", "截图后自动保存到截图库"), target: nil, action: nil)
+    private let launchAtLogin = NSButton(checkboxWithTitle: L("Open Snapok at login (it waits in the menu bar)", "开机登录时自动启动 Snapok（在菜单栏后台运行）"), target: nil, action: nil)
+    private let loginItemHint = NSTextField(labelWithString: "")
+    private let loginItemSettings = NSButton(title: L("Open Login Items", "打开登录项设置"), target: nil, action: nil)
     private let captureCard = NSButton(checkboxWithTitle: L("Show the “Capture anytime” card in the sidebar", "在侧边栏显示「随时截图」卡片"), target: nil, action: nil)
     private let retention = NSPopUpButton()
     private let language = NSPopUpButton()
@@ -206,6 +209,17 @@ final class GeneralSettingsPane: PageView {
         autoSave.action = #selector(save)
         captureCard.target = self
         captureCard.action = #selector(save)
+        launchAtLogin.target = self
+        launchAtLogin.action = #selector(toggleLaunchAtLogin)
+        loginItemHint.font = .systemFont(ofSize: 12)
+        loginItemHint.textColor = .secondaryLabelColor
+        loginItemSettings.bezelStyle = .rounded
+        loginItemSettings.controlSize = .small
+        loginItemSettings.target = self
+        loginItemSettings.action = #selector(openLoginItems)
+        // Approval happens in System Settings; check again when Snapok comes back to the front.
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshLaunchAtLogin),
+                                               name: NSApplication.didBecomeActiveNotification, object: nil)
         NotificationCenter.default.addObserver(forName: AppSettings.captureCardDidChange, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.captureCard.state = AppSettings.showsCaptureCard ? .on : .off }
         }
@@ -260,6 +274,8 @@ final class GeneralSettingsPane: PageView {
             [Self.label(L("Language", "语言")), language],
             [Self.label(L("Theme", "主题")), theme],
             [NSGridCell.emptyContentView, captureCard],
+            [NSGridCell.emptyContentView, launchAtLogin],
+            [NSGridCell.emptyContentView, loginItemRow],
             [Self.label(L("Screenshot selection", "截图选框")), captureAppearanceRow],
             [Self.label(L("Pinned image border", "钉图边框")), pinBorderRow],
             [NSGridCell.emptyContentView, Self.label(L("Choose no color or 0 px for no border.", "选择「无颜色」或粗细设为 0，即可去掉边框。"), secondary: true)],
@@ -291,6 +307,7 @@ final class GeneralSettingsPane: PageView {
         loadCaptureAppearance()
         autoSave.state = AppSettings.autoSave ? .on : .off
         captureCard.state = AppSettings.showsCaptureCard ? .on : .off
+        refreshLaunchAtLogin()
         copyStyled.state = AppSettings.copyStyled ? .on : .off
         retention.selectItem(at: retentionOptions.firstIndex { $0.days == AppSettings.retentionDays } ?? 1)
         refreshLibraryLocation()
@@ -391,6 +408,34 @@ final class GeneralSettingsPane: PageView {
         CaptureAppearance().save()
         loadCaptureAppearance()
     }
+
+    private lazy var loginItemRow: NSStackView = {
+        let row = NSStackView(views: [loginItemHint, loginItemSettings])
+        row.spacing = 8
+        return row
+    }()
+
+    @objc private func toggleLaunchAtLogin() {
+        if let error = LaunchAtLogin.set(launchAtLogin.state == .on) {
+            loginItemHint.stringValue = L("Couldn't change it: \(error.localizedDescription)", "设置失败：\(error.localizedDescription)")
+            loginItemRow.isHidden = false
+            loginItemSettings.isHidden = false
+            launchAtLogin.state = LaunchAtLogin.isEnabled ? .on : .off
+            return
+        }
+        refreshLaunchAtLogin()
+        // macOS may hold a new login item until it is allowed in Login Items.
+        if LaunchAtLogin.needsApproval { LaunchAtLogin.openLoginItemsSettings() }
+    }
+
+    @objc private func refreshLaunchAtLogin() {
+        let waiting = LaunchAtLogin.needsApproval
+        launchAtLogin.state = LaunchAtLogin.isEnabled || waiting ? .on : .off
+        loginItemHint.stringValue = L("Allow Snapok in System Settings → General → Login Items.", "请在「系统设置 → 通用 → 登录项」中允许 Snapok。")
+        loginItemRow.isHidden = !waiting
+    }
+
+    @objc private func openLoginItems() { LaunchAtLogin.openLoginItemsSettings() }
 
     @objc private func saveLanguage() {
         guard LanguagePreference.allCases.indices.contains(language.indexOfSelectedItem) else { return }

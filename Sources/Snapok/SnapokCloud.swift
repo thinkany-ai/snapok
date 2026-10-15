@@ -7,22 +7,25 @@ enum SnapokCloud {
     static let didChangeAccount = Notification.Name("SnapokCloud.didChangeAccount")
     private static let tokenAccount = "cloud.sessionToken"
 
-    /// snapok.app for release builds and the local backend for development builds.
-    /// Override with `defaults write ai.thinkany.snapok.dev cloud.baseURL <url>`.
-    static var baseURL: URL {
-        if let custom = UserDefaults.standard.string(forKey: "cloud.baseURL"), let url = URL(string: custom) {
-            return url
-        }
-        return URL(string: AppChannel.isRelease ? "https://snapok.app" : "http://localhost:3001")!
+    /// The server CI builds bake in as `SnapokCloudURL` (snapok.app). Builds from source have none: no sign-in,
+    /// credits or cloud generation, and Snapok Agent runs on the user's own model.
+    /// Point any build at a backend with `defaults write ai.thinkany.snapok.dev cloud.baseURL http://localhost:3001`.
+    nonisolated static var baseURL: URL? {
+        let custom = UserDefaults.standard.string(forKey: "cloud.baseURL")
+        let bundled = Bundle.main.object(forInfoDictionaryKey: "SnapokCloudURL") as? String
+        return [custom, bundled].lazy.compactMap { $0.flatMap(URL.init(string:)) }.first { $0.host != nil }
     }
+
+    nonisolated static var isAvailable: Bool { baseURL != nil }
 
     /// Registered per channel by `scripts/build-app.sh`; the website hands the session token back through it.
     static var urlScheme: String { AppChannel.isRelease ? "snapok" : "snapok-dev" }
 
-    static var isSignedIn: Bool { Keychain.read(account: tokenAccount) != nil }
+    static var isSignedIn: Bool { isAvailable && Keychain.read(account: tokenAccount) != nil }
 
     /// Opens the website's sign-in page; it returns to `handle(_:)` with a session token.
     static func signIn() {
+        guard let baseURL else { return }
         var components = URLComponents(url: baseURL.appendingPathComponent("sign-in"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "redirect", value: "\(urlScheme)://auth/callback")]
         if let url = components.url { NSWorkspace.shared.open(url) }
@@ -73,7 +76,7 @@ enum SnapokCloud {
 
     /// Opens the website's pricing page: the Pro plan, or the credit packs for members.
     static func openPricing() {
-        let pricing = account?.pricingURL ?? baseURL.appendingPathComponent("pricing")
+        guard let pricing = account?.pricingURL ?? baseURL?.appendingPathComponent("pricing") else { return }
         guard account?.isPro == true, var components = URLComponents(url: pricing, resolvingAgainstBaseURL: false) else {
             NSWorkspace.shared.open(pricing)
             return
@@ -284,7 +287,7 @@ enum SnapokCloud {
 
     /// Calls the API as the signed-in user.
     private static func urlRequest(_ path: String, method: String, body: [String: Any]?) throws -> URLRequest {
-        guard let token = Keychain.read(account: tokenAccount) else { throw CloudError.signedOut }
+        guard let baseURL, let token = Keychain.read(account: tokenAccount) else { throw CloudError.signedOut }
         // Agent runs can take minutes; the default 60-second timeout would cut them off.
         var request = URLRequest(url: baseURL.appendingPathComponent(path), timeoutInterval: 300)
         request.httpMethod = method

@@ -174,7 +174,18 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         let more = secondary(L("Pin, paste with style, and the editing tools have shortcuts too, in Settings → Shortcuts.",
                                "钉图、粘贴带样式截图和编辑工具的快捷键，可以在「设置 → 快捷键」里修改。"))
         content.addArrangedSubview(more)
+        // The shortcut only works while Snapok runs, so it starts at login unless turned off here or in Settings.
+        let login = NSButton(checkboxWithTitle: L("Open Snapok at login, so the shortcut always works", "开机自动启动，让快捷键随时可用"),
+                             target: self, action: #selector(toggleLaunchAtLogin(_:)))
+        login.state = LaunchAtLogin.isEnabled || LaunchAtLogin.needsApproval ? .on : .off
+        content.setCustomSpacing(18, after: more)
+        content.addArrangedSubview(login)
         footer(next: L("Continue", "继续"), primary: true)
+    }
+
+    @objc private func toggleLaunchAtLogin(_ sender: NSButton) {
+        _ = LaunchAtLogin.set(sender.state == .on)
+        sender.state = LaunchAtLogin.isEnabled || LaunchAtLogin.needsApproval ? .on : .off
     }
 
     private func capture() {

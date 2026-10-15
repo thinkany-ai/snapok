@@ -55,6 +55,13 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         app.run()
     }
 
+    /// Set when macOS opened Snapok from Login Items: it then starts in the menu bar only.
+    private var launchedAtLogin = false
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        launchedAtLogin = LaunchAtLogin.isLaunchingAtLogin()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Before anything saves preferences: no shortcut chosen and an empty library means a first launch.
         let isNewUser = UserDefaults.standard.dictionary(forKey: HotKey.preferenceKey) == nil && HistoryStore.shared.items.isEmpty
@@ -86,9 +93,17 @@ final class SnapokApp: NSObject, NSApplicationDelegate {
         }
         ImageAgentEntry.openChat = { [weak self] id in self?.mainWindowController().presentImageAgent(chat: id) }
         AgentNotifier.shared.start()
-        showLibrary()
+        // Opened at login: stay in the menu bar, ready for the shortcut, without a window or Dock icon.
+        if launchedAtLogin {
+            NSApp.setActivationPolicy(.accessory)
+            log("launched at login")
+        } else {
+            showLibrary()
+        }
         OnboardingWindowController.shared.onCapture = { [weak self] in self?.startScreenshot() }
         OnboardingWindowController.shared.onAskAgent = { image in ImageAgentEntry.open?(image, .edit) }
+        // A screenshot tool should be around when its shortcut is pressed: new users start at login by default.
+        if isNewUser { LaunchAtLogin.enableForNewUser() }
         OnboardingWindowController.showIfNeeded(isNewUser: isNewUser)
         Updater.shared.start()
         Telemetry.start()

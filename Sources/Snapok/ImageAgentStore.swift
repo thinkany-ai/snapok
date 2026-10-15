@@ -332,7 +332,9 @@ final class ImageAgentStore {
     /// Why a cloud generation can't run right now, or nil when it can. The server checks credits again.
     static func generationBlocked() -> String? {
         guard SnapokCloud.isSignedIn else {
-            return L("Generating this needs Snapok Cloud. Sign in to continue.", "这一步需要 Snapok 云端生成，登录后即可继续。")
+            return SnapokCloud.isAvailable
+                ? L("Generating this needs Snapok Cloud. Sign in to continue.", "这一步需要 Snapok 云端生成，登录后即可继续。")
+                : L("Generating this needs Snapok Cloud, which builds from source don't include.", "这一步需要 Snapok 云端生成，源码构建的版本不包含云端功能。")
         }
         if let account = SnapokCloud.account, !account.canAffordTurn {
             return L("Generating this needs \(account.cost) credits; you have \(account.balance).",

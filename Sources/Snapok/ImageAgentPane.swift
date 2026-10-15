@@ -335,7 +335,11 @@ final class ImageAgentPane: NSView, NSSplitViewDelegate {
                         started: chatID.flatMap { store.startedAt[$0] })
         let account = SnapokCloud.account
         gate = currentGate(chat)
+        let cloud = SnapokCloud.isAvailable
         switch gate {
+        case .signIn where !cloud:
+            noticeLabel.stringValue = L("Add your own model to use Snapok Agent.", "配置自己的模型即可使用 Snapok Agent。")
+            noticeButton.title = L("Add My Model", "配置自己的模型")
         case .signIn:
             noticeLabel.stringValue = L("Sign in to use Snapok Agent (new accounts get free credits), or add your own model to use it free.",
                                         "登录即可使用 Snapok Agent（新用户赠送积分），也可以配置自己的模型免费使用。")
@@ -344,6 +348,10 @@ final class ImageAgentPane: NSView, NSSplitViewDelegate {
             noticeLabel.stringValue = L("Each message needs \(account.textCost) credits; you have \(account.balance). Or add your own model to use it free.",
                                         "每条消息需要 \(account.textCost) 积分，当前剩余 \(account.balance)。也可以配置自己的模型免费使用。")
             noticeButton.title = account.isPro ? L("Buy Credits", "购买积分") : L("Get Pro", "订阅 Pro")
+        case .signInToGenerate where !cloud:
+            noticeLabel.stringValue = L("Generating images runs on Snapok Cloud, which builds from source don't include. Download Snapok to use it.",
+                                        "生成图片需要 Snapok 云端，源码构建的版本不包含云端功能。下载官方版本即可使用。")
+            noticeButton.title = L("Download Snapok", "下载官方版本")
         case .signInToGenerate:
             noticeLabel.stringValue = L("Sign in to Snapok to finish this with cloud generation; new accounts get free credits.",
                                         "登录 Snapok 账号即可继续云端生成，新用户赠送积分。")
@@ -358,13 +366,14 @@ final class ImageAgentPane: NSView, NSSplitViewDelegate {
         noticeBar.isHidden = gate == nil
         // Planning can use the user's own model instead of signing in or buying credits; generation always runs on Snapok Cloud.
         switch gate {
-        case .signIn, .planCredits: ownModelButton.isHidden = false
+        case .signIn, .planCredits: ownModelButton.isHidden = !cloud
         default: ownModelButton.isHidden = true
         }
         noticeLabelBeforeModel.isActive = !ownModelButton.isHidden
         noticeLabelBeforeButton.isActive = ownModelButton.isHidden
         // Always an account entry: sign in when signed out (a user with their own model is never asked otherwise),
-        // the balance once the account has loaded.
+        // the balance once the account has loaded. Builds without Snapok Cloud have no account at all.
+        creditsButton.isHidden = !cloud
         if !SnapokCloud.isSignedIn {
             creditsButton.title = L("Sign In", "登录")
             creditsButton.image = NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: nil)
@@ -412,12 +421,21 @@ final class ImageAgentPane: NSView, NSSplitViewDelegate {
     /// The reply's "Continue" button: fixes what blocks the generation first, otherwise runs it.
     private func resumeGeneration() {
         guard let chatID else { return }
-        switch currentGate(store.chat(chatID)) {
-        case .signIn, .signInToGenerate: SnapokCloud.signIn()
-        case .planCredits, .generateCredits: SnapokCloud.openPricing()
-        case nil:
+        guard let gate = currentGate(store.chat(chatID)) else {
             Telemetry.capture("ai_used", ["feature": "image_agent"])
             store.resumeGeneration(chatID)
+            return
+        }
+        resolve(gate)
+    }
+
+    /// What the notice button (and the reply's "Continue") does about a gate.
+    private func resolve(_ gate: Gate) {
+        switch gate {
+        case .signIn where !SnapokCloud.isAvailable: openModels()
+        case .signInToGenerate where !SnapokCloud.isAvailable: NSWorkspace.shared.open(URL(string: "https://snapok.app")!)
+        case .signIn, .signInToGenerate: SnapokCloud.signIn()
+        case .planCredits, .generateCredits: SnapokCloud.openPricing()
         }
     }
 
@@ -578,16 +596,11 @@ final class ImageAgentPane: NSView, NSSplitViewDelegate {
         }
     }
     @objc private func newChatClicked() { startNewChat() }
-    @objc private func noticeAction() {
-        switch gate {
-        case .signIn, .signInToGenerate: SnapokCloud.signIn()
-        case .planCredits, .generateCredits: SnapokCloud.openPricing()
-        case nil: break
-        }
-    }
+    @objc private func noticeAction() { gate.map(resolve) }
     @objc private func openModels() { onOpenSettings?(.models) }
 
     @objc private func showAccountMenu(_ sender: NSButton) {
+        guard SnapokCloud.isAvailable else { return }
         guard SnapokCloud.isSignedIn else { SnapokCloud.signIn(); return }
         guard let account = SnapokCloud.account else {
             // Still loading, or the server was unreachable: try again.

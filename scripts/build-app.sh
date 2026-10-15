@@ -43,8 +43,10 @@ PLIST="$APP_DIR/Contents/Info.plist"
   -c "Set :CFBundleURLTypes:0:CFBundleURLName $BUNDLE_ID" -c "Set :CFBundleURLTypes:0:CFBundleURLSchemes:0 $URL_SCHEME" "$PLIST"
 cp -R "$BIN_DIR/Snapok_Snapok.bundle" "$APP_DIR/Contents/Resources/"
 chmod +x "$APP_DIR/Contents/MacOS/Snapok"
-# Telemetry keys exist only in the project's own CI builds; builds from source leave them out and never report.
-for pair in "SnapokPostHogKey:${POSTHOG_PROJECT_KEY:-}" "SnapokPostHogHost:${POSTHOG_HOST:-}" "SnapokSentryDSN:${SENTRY_DSN:-}"; do
+# Telemetry keys and the Snapok Cloud address exist only in the project's own CI builds; builds from source leave
+# them out, never report, and run Snapok Agent on the user's own model only.
+for pair in "SnapokPostHogKey:${POSTHOG_PROJECT_KEY:-}" "SnapokPostHogHost:${POSTHOG_HOST:-}" "SnapokSentryDSN:${SENTRY_DSN:-}" \
+  "SnapokCloudURL:${SNAPOK_CLOUD_URL:-}"; do
   [[ -n "${pair#*:}" ]] && /usr/libexec/PlistBuddy -c "Add :${pair%%:*} string ${pair#*:}" "$PLIST"
 done
 if [[ -n "${BUILD_NUMBER:-}" ]]; then
